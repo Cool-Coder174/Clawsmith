@@ -132,14 +132,14 @@ class DoctorChecker:
             )
 
     def _check_cursor_cli(self) -> None:
-        name = "Cursor CLI (legacy check)"
+        name = "Cursor Agent CLI"
         cli_path = os.environ.get("CURSOR_CLI_PATH")
         if cli_path and Path(cli_path).exists():
             self._pass(name, cli_path)
-        elif shutil.which("cursor"):
+        elif shutil.which("agent"):
             self._pass(name, "found via PATH")
         else:
-            self._warn(name, "Set CURSOR_CLI_PATH or add cursor to PATH")
+            self._warn(name, "Install Cursor so the `agent` CLI is on PATH")
 
     def _check_agent_clis(self) -> None:
         """Detect all registered agent CLIs and report availability."""

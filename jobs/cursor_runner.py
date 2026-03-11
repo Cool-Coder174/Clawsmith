@@ -30,7 +30,7 @@ def detect_cursor_cli() -> Path | None:
         if p.exists():
             return p
 
-    which_result = shutil.which("cursor")
+    which_result = shutil.which("agent") or shutil.which("cursor")
     if which_result:
         return Path(which_result)
 

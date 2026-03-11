@@ -89,6 +89,9 @@ class AgentDetector:
             cursor_env = os.environ.get("CURSOR_CLI_PATH")
             if cursor_env and Path(cursor_env).exists():
                 return cursor_env
+            agent_on_path = shutil.which("agent")
+            if agent_on_path:
+                return agent_on_path
 
         return None
 

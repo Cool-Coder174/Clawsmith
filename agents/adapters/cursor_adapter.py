@@ -1,12 +1,21 @@
-"""Adapter for the Cursor Agent CLI."""
+"""Adapter for the Cursor Agent CLI.
+
+The Cursor agent is invoked via the ``agent`` executable::
+
+    agent chat "$env:CLAWSMITH_PROMPT"   # Windows PowerShell
+    agent chat "$CLAWSMITH_PROMPT"       # POSIX
+"""
 
 from __future__ import annotations
 
 import os
+import platform
 from pathlib import Path
 
 from agents.base import AgentAdapter, AgentRunResult, DetectionResult, InvocationSpec
 from agents.capabilities import AgentCapability
+
+_ENV_VAR = "CLAWSMITH_PROMPT"
 
 
 class CursorAdapter(AgentAdapter):
@@ -21,11 +30,11 @@ class CursorAdapter(AgentAdapter):
 
     @property
     def executable_names(self) -> list[str]:
-        return ["cursor", "cursor.exe"]
+        return ["agent", "agent.exe"]
 
     @property
     def version_commands(self) -> list[list[str]]:
-        return [["cursor", "--version"]]
+        return [["agent", "--version"]]
 
     @property
     def capabilities(self) -> frozenset[AgentCapability]:
@@ -40,8 +49,8 @@ class CursorAdapter(AgentAdapter):
     @property
     def installation_hint(self) -> str:
         return (
-            "Install Cursor from https://cursor.sh and set CURSOR_CLI_PATH "
-            "in .env, or add it to PATH."
+            "Install Cursor from https://cursor.sh — the `agent` CLI "
+            "should be available on PATH after installation."
         )
 
     def build_invocation(
@@ -57,13 +66,22 @@ class CursorAdapter(AgentAdapter):
         timeout_seconds: int = 300,
         prompt_file: Path | None = None,
     ) -> InvocationSpec:
-        executable = os.environ.get("CURSOR_CLI_PATH", "cursor")
-        args = [executable, "--command", prompt, "--no-interactive"]
+        executable = os.environ.get("CURSOR_CLI_PATH", "agent")
+        env = dict(env_overrides or {})
+        env[_ENV_VAR] = prompt
+
+        env_ref = (
+            f"$env:{_ENV_VAR}"
+            if platform.system() == "Windows"
+            else f"${_ENV_VAR}"
+        )
+        args = [executable, "chat", env_ref]
         if extra_flags:
             args.extend(extra_flags)
+
         return InvocationSpec(
             args=args,
-            env_overrides=env_overrides or {},
+            env_overrides=env,
             cwd=working_directory,
             timeout_seconds=timeout_seconds,
         )

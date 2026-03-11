@@ -86,7 +86,7 @@ class TemplateRenderer:
             "AGENT_DISPLAY_NAME": agent_display_name,
             "AGENT_INVOCATION": agent_invocation,
             # Legacy Cursor variables for backwards compatibility
-            "CURSOR_CLI_PATH": os.environ.get("CURSOR_CLI_PATH", "cursor"),
+            "CURSOR_CLI_PATH": os.environ.get("CURSOR_CLI_PATH", "agent"),
             "CURSOR_PROMPT": profile.variables.get("CURSOR_PROMPT", ""),
         }
 

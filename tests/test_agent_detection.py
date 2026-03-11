@@ -22,7 +22,7 @@ class TestAdapterProperties:
         adapter = CursorAdapter()
         assert adapter.agent_id == "cursor"
         assert adapter.display_name == "Cursor Agent"
-        assert "cursor" in adapter.executable_names
+        assert "agent" in adapter.executable_names
         assert AgentCapability.headless_prompt in adapter.capabilities
         assert adapter.supports_headless
 
@@ -53,12 +53,11 @@ class TestAdapterProperties:
 class TestCommandTemplateGeneration:
     def test_cursor_invocation(self):
         adapter = CursorAdapter()
-        with patch.dict("os.environ", {"CURSOR_CLI_PATH": "cursor"}, clear=False):
+        with patch.dict("os.environ", {"CURSOR_CLI_PATH": "agent"}, clear=False):
             spec = adapter.build_invocation("Fix the bug", working_directory=".")
-        assert "cursor" in spec.args[0]
-        assert "--command" in spec.args
-        assert "Fix the bug" in spec.args
-        assert "--no-interactive" in spec.args
+        assert spec.args[0] == "agent"
+        assert "chat" in spec.args
+        assert spec.env_overrides.get("CLAWSMITH_PROMPT") == "Fix the bug"
 
     def test_claude_code_invocation(self):
         adapter = ClaudeCodeAdapter()
