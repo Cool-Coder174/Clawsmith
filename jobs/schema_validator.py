@@ -77,11 +77,11 @@ class JobSpecValidator:
                 )
             try:
                 wd.resolve().relative_to(workspace_root.resolve())
-            except ValueError:
+            except ValueError as exc:
                 raise ValidationError(
                     f"working_directory '{job.working_directory}' is outside the "
                     f"workspace root '{workspace_root}'."
-                )
+                ) from exc
 
         if not dry_run and not wd.exists():
             raise ValidationError(

@@ -54,7 +54,8 @@ class ModelRouter:
             if selected_tier != ModelTier.premium:
                 selected_tier = ModelTier.premium
                 reasoning_parts.append(
-                    f"failure_severity={classification.failure_severity:.2f} > 0.8 → override to premium"
+                    f"failure_severity={classification.failure_severity:.2f}"
+                    " > 0.8 → override to premium"
                 )
 
         model_cfg = getattr(self.models_config, selected_tier.value)

@@ -1,10 +1,10 @@
 # Bugfix Worker Agent Profile
-# Runs pre-flight tests to reproduce the bug, invokes the Cursor agent to fix
+# Runs pre-flight tests to reproduce the bug, invokes an agent CLI to fix
 # it, then runs verification tests to confirm the fix.
 
 name: bugfix_worker
 description: >-
-  Dispatches a local code model to diagnose and fix a reported bug.
+  Dispatches an agent CLI to diagnose and fix a reported bug.
   Runs tests before and after the fix to verify correctness.
 task_type: bugfix
 working_directory: "."
@@ -12,10 +12,12 @@ build_commands:
   - "python -m pytest tests/ -x -q"
 test_commands:
   - "python -m pytest tests/ -v"
-prompt_template: agent_bugfix.bat.template
+prompt_template: agent_task.bat.template
 variables:
   OBJECTIVE: "Fix the reported bug"
   CURSOR_PROMPT: "Fix the bug described in the task"
+  AGENT_PROMPT: "Fix the bug described in the task"
+agent_target: null
 provider_preference: local_code
 timeout_seconds: 600
 dry_run: false

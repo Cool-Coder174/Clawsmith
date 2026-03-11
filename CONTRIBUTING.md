@@ -76,6 +76,20 @@ See [docs/agent_profiles.md](docs/agent_profiles.md) for the full schema referen
 
 ---
 
+## Adding a New Agent CLI Adapter
+
+1. Create a new file in `agents/adapters/`, e.g. `codex_adapter.py`.
+2. Extend `AgentAdapter` from `agents/base.py`.
+3. Implement all abstract properties: `agent_id`, `display_name`, `executable_names`, `version_commands`, `capabilities`.
+4. Implement `build_invocation()` to construct the CLI command for headless prompt execution.
+5. Implement `parse_result()` to convert raw subprocess output into `AgentRunResult`.
+6. Register the adapter in `AgentRegistry.register_builtins()` in `agents/registry.py`.
+7. Run `clawsmith detect-agents` to verify detection works.
+
+See [docs/architecture.md](docs/architecture.md) for the full adapter interface reference.
+
+---
+
 ## Adding a New `.bat` Template
 
 1. Copy an existing template from `jobs/templates/`.

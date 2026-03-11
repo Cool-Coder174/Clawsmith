@@ -2,7 +2,7 @@
 
 ## What Profiles Are
 
-Agent profiles are YAML files in `config/agent_profiles/` that define how an agent worker is deployed without touching core source code. Each profile specifies a task type, model tier, template, variables, timeout, and retry policy. Profiles are loaded by `ProfileLoader` and converted to `JobSpec` instances for execution.
+Agent profiles are YAML files in `config/agent_profiles/` that define how an agent worker is deployed without touching core source code. Each profile specifies a task type, agent CLI target, model tier, template, variables, timeout, and retry policy. Profiles are **agent-agnostic**: the `agent_target` field controls which CLI adapter to use (`cursor`, `claude_code`, `gemini_cli`, etc.), and when set to `null` or `"auto"`, the system auto-selects the best available agent. Profiles are loaded by `ProfileLoader` and converted to `JobSpec` instances for execution.
 
 ---
 
@@ -18,12 +18,16 @@ Every field maps to the `AgentProfile` Pydantic model in `orchestrator/schemas.p
 | `working_directory` | `str` | `"."` | Working directory for the job |
 | `build_commands` | `list[str]` | `[]` | Commands run in the build phase |
 | `test_commands` | `list[str]` | `[]` | Commands run in the test/verify phase |
-| `prompt_template` | `str` | `cursor_task.bat.template` | `.bat.template` filename from `jobs/templates/` |
-| `variables` | `dict[str, str]` | `{}` | Template variables; `OBJECTIVE` and `CURSOR_PROMPT` are special |
+| `prompt_template` | `str` | `agent_task.bat.template` | `.bat.template` filename from `jobs/templates/` |
+| `variables` | `dict[str, str]` | `{}` | Template variables; `OBJECTIVE`, `CURSOR_PROMPT`, and `AGENT_PROMPT` are special |
+| `agent_target` | `str \| null` | `null` | Agent CLI id (e.g. `cursor`, `claude_code`, `gemini_cli`). `null` or `"auto"` = auto-select. |
 | `provider_preference` | `ModelTier` | `local_code` | One of: `local_router`, `local_code`, `premium`, `prompt_polisher` |
+| `model_preference` | `str \| null` | `null` | Explicit model name for agent CLIs that support model switching |
 | `timeout_seconds` | `int` | `300` | Execution timeout (10–3600) |
 | `dry_run` | `bool` | `false` | Skip actual execution |
 | `retries` | `int` | `1` | Retry count (0–5) |
+| `output_format` | `str \| null` | `null` | `"json"`, `"text"`, or `null` for agent default |
+| `approval_mode` | `str \| null` | `null` | Agent-specific approval/sandbox mode |
 | `tags` | `list[str]` | `[]` | Metadata tags |
 
 ---
@@ -32,10 +36,11 @@ Every field maps to the `AgentProfile` Pydantic model in `orchestrator/schemas.p
 
 Templates use Python's `string.Template.safe_substitute` syntax. In `.bat.template` files, `$VARIABLE` or `${VARIABLE}` references are replaced with values from the profile's `variables` dict (plus injected system variables like `JOB_ID`).
 
-Two variable keys have special meaning:
+Three variable keys have special meaning:
 
 - **`OBJECTIVE`** — used as the `objective` field of the generated `JobSpec`. Falls back to the profile's `description` if not set.
-- **`CURSOR_PROMPT`** — the prompt text passed to the Cursor CLI. `ProfileLoader.to_job_spec()` applies `safe_substitute` to this value, so it can reference other variables from the same dict.
+- **`AGENT_PROMPT`** — the prompt text passed to the selected agent CLI. `ProfileLoader.to_job_spec()` applies `safe_substitute` to this value, so it can reference other variables from the same dict.
+- **`CURSOR_PROMPT`** — legacy alias for `AGENT_PROMPT`. Preserved for backwards compatibility with Cursor-specific templates. If `AGENT_PROMPT` is not set, `CURSOR_PROMPT` is used as fallback.
 
 Unknown `$VARIABLE` references are left as-is (`safe_substitute` does not raise on missing keys).
 
@@ -45,23 +50,23 @@ Unknown `$VARIABLE` references are left as-is (`safe_substitute` does not raise 
 
 ### `code_audit`
 
-Runs a local code model for static analysis, linting, and type-checking. Uses `agent_audit.bat.template` with `ruff check .` and `mypy orchestrator/ --ignore-missing-imports` as test commands. No build step. Tier: `local_code`, timeout: 300s.
+Runs static analysis, linting, and type-checking via the auto-selected agent CLI. Uses `agent_task.bat.template` with `ruff check .` and `mypy orchestrator/ --ignore-missing-imports` as test commands. No build step. Tier: `local_code`, timeout: 300s.
 
 ### `bugfix_worker`
 
-Dispatches a local code model to diagnose and fix a reported bug. Runs pre-flight tests (`pytest tests/ -x -q`) to reproduce the bug, invokes Cursor to apply the fix, then runs verification tests (`pytest tests/ -v`). Uses `agent_bugfix.bat.template`. Tier: `local_code`, timeout: 600s, retries: 2.
+Dispatches the auto-selected agent CLI to diagnose and fix a reported bug. Runs pre-flight tests (`pytest tests/ -x -q`) to reproduce the bug, invokes the agent to apply the fix, then runs verification tests (`pytest tests/ -v`). Uses `agent_task.bat.template`. Tier: `local_code`, timeout: 600s, retries: 2.
 
 ### `implementation_worker`
 
-Dispatches a local code model to implement a requested feature. No build step — goes straight to Cursor, then runs post-implementation tests (`pytest tests/ -v`). Uses `agent_implement.bat.template`. Tier: `local_code`, timeout: 900s.
+Dispatches the auto-selected agent CLI to implement a requested feature. No build step — goes straight to the agent, then runs post-implementation tests (`pytest tests/ -v`). Uses `agent_task.bat.template`. Tier: `local_code`, timeout: 900s.
 
 ### `prompt_polisher`
 
-Uses the `prompt_polisher` model tier to refine draft prompts for clarity, completeness, and optimal LLM consumption. No build or test commands — purely a text transformation step. Uses `cursor_task.bat.template`. Tier: `prompt_polisher`, timeout: 120s.
+Uses the `prompt_polisher` model tier to refine draft prompts for clarity, completeness, and optimal LLM consumption. No build or test commands — purely a text transformation step. Uses `agent_task.bat.template`. Tier: `prompt_polisher`, timeout: 120s.
 
 ### `heavy_remote_escalation`
 
-Escalates to the premium remote model for complex architectural refactors and high-impact changes that exceed the capability of local models. Uses `agent_implement.bat.template` with post-implementation tests. Tier: `premium`, timeout: 1800s, retries: 2.
+Escalates to the premium remote model for complex architectural refactors and high-impact changes that exceed the capability of local models. Uses `agent_task.bat.template` with post-implementation tests. Tier: `premium`, timeout: 1800s, retries: 2.
 
 ---
 

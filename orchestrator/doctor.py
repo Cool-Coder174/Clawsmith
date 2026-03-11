@@ -6,9 +6,13 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.table import Table
+
+if TYPE_CHECKING:
+    from config.config_loader import ClawsmithConfig
 
 _REPO_ROOT = Path(__file__).parent.parent
 
@@ -16,15 +20,16 @@ _REPO_ROOT = Path(__file__).parent.parent
 class DoctorChecker:
     """Runs a suite of preflight checks and reports results via ``rich``."""
 
-    _PASS = "[bold green]\u2705 PASS[/bold green]"
-    _WARN = "[bold yellow]\u26a0\ufe0f  WARN[/bold yellow]"
-    _FAIL = "[bold red]\u274c FAIL[/bold red]"
+    _PASS = "[bold green]PASS[/bold green]"
+    _WARN = "[bold yellow]WARN[/bold yellow]"
+    _FAIL = "[bold red]FAIL[/bold red]"
 
     def __init__(self) -> None:
         self._console = Console()
         self._passes = 0
         self._warnings = 0
         self._failures = 0
+        self._cfg: ClawsmithConfig | None = None
         self._table = Table(title="ClawSmith Doctor", show_lines=True)
         self._table.add_column("Check", style="cyan", min_width=30)
         self._table.add_column("Status", min_width=10)
@@ -36,6 +41,7 @@ class DoctorChecker:
         self._check_pip()
         self._check_git()
         self._check_cursor_cli()
+        self._check_agent_clis()
         self._check_env_file()
         self._check_env_keys()
         self._check_settings_yaml()
@@ -112,7 +118,7 @@ class DoctorChecker:
             self._warn(name, "git not found on PATH")
 
     def _check_cursor_cli(self) -> None:
-        name = "Cursor CLI"
+        name = "Cursor CLI (legacy check)"
         cli_path = os.environ.get("CURSOR_CLI_PATH")
         if cli_path and Path(cli_path).exists():
             self._pass(name, cli_path)
@@ -120,6 +126,28 @@ class DoctorChecker:
             self._pass(name, "found via PATH")
         else:
             self._warn(name, "Set CURSOR_CLI_PATH or add cursor to PATH")
+
+    def _check_agent_clis(self) -> None:
+        """Detect all registered agent CLIs and report availability."""
+        try:
+            from agents.registry import get_agent_registry
+
+            registry = get_agent_registry(auto_detect=True)
+            available = registry.available_agents()
+            all_agents = registry.all_agents()
+
+            if available:
+                self._pass(
+                    "Agent CLIs detected",
+                    f"{len(available)}/{len(all_agents)}: {', '.join(available)}",
+                )
+            else:
+                self._warn(
+                    "Agent CLIs detected",
+                    "No agent CLIs found. Install at least one (cursor, claude, gemini).",
+                )
+        except Exception as exc:
+            self._warn("Agent CLIs detected", f"Detection failed: {exc}")
 
     def _check_env_file(self) -> None:
         name = ".env file exists"

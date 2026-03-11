@@ -3,32 +3,89 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from orchestrator.logging_setup import get_logger
 from orchestrator.schemas import PipelineResult
 
+if TYPE_CHECKING:
+    from orchestrator.pipeline import OrchestrationPipeline
+
 logger = get_logger("openclaw_adapter")
 
 OPENCLAW_TOOL_DEFINITIONS: list[dict] = [
-    {"name": "repo_audit", "description": "Audit a repository for languages, frameworks, CI, and tooling.", "input": "repo_path: str"},
-    {"name": "repo_map", "description": "Generate a directory-tree map with entrypoints and important files.", "input": "repo_path: str, max_lines: int"},
-    {"name": "repo_pack_context", "description": "Audit, map, and pack repository context for a task.", "input": "repo_path: str, task_description: str, file_list: list[str]|None"},
-    {"name": "route_pick_model", "description": "Classify a task and route it to the best model tier.", "input": "task_description: str, context_json: str|None"},
-    {"name": "cost_estimate", "description": "Estimate cost of running a task across all model tiers.", "input": "task_description: str, context_size_tokens: int"},
-    {"name": "cursor_run_job", "description": "Parse a JobSpec from JSON and execute it.", "input": "job_spec_json: str"},
-    {"name": "cursor_run_bat", "description": "Execute a .bat file within the workspace.", "input": "bat_path: str, timeout: int"},
-    {"name": "build_run", "description": "Detect and run build/install commands for a repository.", "input": "repo_path: str, ecosystem: str|None"},
-    {"name": "tests_run", "description": "Detect and run test commands for a repository.", "input": "repo_path: str, ecosystem: str|None"},
-    {"name": "git_create_worktree", "description": "Create a git worktree with a new branch.", "input": "repo_path: str, branch_name: str, worktree_path: str"},
-    {"name": "logs_read_recent", "description": "Read the last N lines from the ClawSmith log file.", "input": "lines: int"},
-    {"name": "prompts_generate_task_prompt", "description": "Generate a structured task prompt from repo context + routing.", "input": "task_description: str, repo_path: str"},
+    {
+        "name": "repo_audit",
+        "description": "Audit a repository for languages, frameworks, CI, and tooling.",
+        "input": "repo_path: str",
+    },
+    {
+        "name": "repo_map",
+        "description": "Generate a directory-tree map with entrypoints.",
+        "input": "repo_path: str, max_lines: int",
+    },
+    {
+        "name": "repo_pack_context",
+        "description": "Audit, map, and pack repository context for a task.",
+        "input": "repo_path: str, task_description: str, file_list: list[str]|None",
+    },
+    {
+        "name": "route_pick_model",
+        "description": "Classify a task and route it to the best model tier.",
+        "input": "task_description: str, context_json: str|None",
+    },
+    {
+        "name": "cost_estimate",
+        "description": "Estimate cost across all model tiers.",
+        "input": "task_description: str, context_size_tokens: int",
+    },
+    {
+        "name": "agent_run_job",
+        "description": "Parse a JobSpec from JSON and execute it via agent CLI.",
+        "input": "job_spec_json: str",
+    },
+    {
+        "name": "agent_run_bat",
+        "description": "Execute a .bat file within the workspace.",
+        "input": "bat_path: str, timeout: int",
+    },
+    {
+        "name": "detect_agent_clis",
+        "description": "Detect installed agent CLIs and return capability matrix.",
+        "input": "",
+    },
+    {
+        "name": "build_run",
+        "description": "Detect and run build/install commands.",
+        "input": "repo_path: str, ecosystem: str|None",
+    },
+    {
+        "name": "tests_run",
+        "description": "Detect and run test commands.",
+        "input": "repo_path: str, ecosystem: str|None",
+    },
+    {
+        "name": "git_create_worktree",
+        "description": "Create a git worktree with a new branch.",
+        "input": "repo_path: str, branch_name: str, worktree_path: str",
+    },
+    {
+        "name": "logs_read_recent",
+        "description": "Read the last N lines from the ClawSmith log.",
+        "input": "lines: int",
+    },
+    {
+        "name": "prompts_generate_task_prompt",
+        "description": "Generate a structured task prompt from repo context.",
+        "input": "task_description: str, repo_path: str",
+    },
 ]
 
 
 class OpenClawAdapter:
     """Adapter that lets OpenClaw route tasks into ClawSmith's pipeline."""
 
-    def __init__(self, pipeline: object | None = None) -> None:
+    def __init__(self, pipeline: OrchestrationPipeline | None = None) -> None:
         if pipeline is not None:
             self.pipeline = pipeline
         else:

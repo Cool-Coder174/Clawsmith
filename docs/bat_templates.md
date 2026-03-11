@@ -19,8 +19,11 @@ When rendering a profile via `TemplateRenderer.render_for_profile()`, the follow
 | `$ARTIFACT_DIR` | `artifacts/<job_id>/` | Log and artifact output directory |
 | `$BUILD_COMMANDS` | Rendered from `profile.build_commands` | Multi-line build phase block (echo + run + error check) |
 | `$TEST_COMMANDS` | Rendered from `profile.test_commands` | Multi-line test phase block (echo + run + error check) |
-| `$CURSOR_CLI_PATH` | `CURSOR_CLI_PATH` env var or `"cursor"` | Path to the Cursor executable |
-| `$CURSOR_PROMPT` | `profile.variables["CURSOR_PROMPT"]` | Prompt passed to the Cursor CLI |
+| `$AGENT_ID` | Selected agent adapter's `agent_id` | Machine-readable agent identifier |
+| `$AGENT_DISPLAY_NAME` | Selected agent adapter's `display_name` | Human-readable agent name |
+| `$AGENT_INVOCATION` | Built by the adapter's `build_invocation()` | Full command line for the agent CLI |
+| `$CURSOR_CLI_PATH` | `CURSOR_CLI_PATH` env var or `"cursor"` | Legacy: path to the Cursor executable |
+| `$CURSOR_PROMPT` | `profile.variables["CURSOR_PROMPT"]` | Legacy: prompt passed to the Cursor CLI |
 
 Build and test command blocks are formatted as repeating triplets:
 ```
@@ -33,25 +36,29 @@ if errorlevel 1 set EXIT_CODE=1
 
 ## Bundled Templates
 
+### `agent_task.bat.template` (recommended)
+
+The agent-agnostic template. Build phase, then invokes `$AGENT_INVOCATION` (the selected agent CLI), then test phase. This is the default template for all new profiles and supports any agent adapter.
+
 ### `build_and_test.bat.template`
 
-Build phase followed by test phase, no Cursor invocation. Used for tasks that only need build and test commands.
+Build phase followed by test phase, no agent invocation. Used for tasks that only need build and test commands.
 
-### `cursor_task.bat.template`
+### `cursor_task.bat.template` (legacy)
 
-Build phase, then invokes the Cursor CLI with `$CURSOR_PROMPT`, then test phase. The general-purpose template for Cursor-driven tasks.
+Build phase, then invokes the Cursor CLI with `$CURSOR_PROMPT`, then test phase. Preserved for backwards compatibility. New profiles should use `agent_task.bat.template`.
 
-### `agent_audit.bat.template`
+### `agent_audit.bat.template` (legacy)
 
-Audit commands only — runs test commands as audit checks (e.g. `ruff check`, `mypy`). No build step and no Cursor invocation. Used by the `code_audit` profile.
+Audit commands only — runs test commands as audit checks. No build step and no agent invocation. Preserved for backwards compatibility.
 
-### `agent_bugfix.bat.template`
+### `agent_bugfix.bat.template` (legacy)
 
-Pre-flight tests (build commands) to reproduce the bug, then invokes Cursor to apply the fix, then verification tests (test commands). Used by the `bugfix_worker` profile.
+Pre-flight tests, then invokes Cursor to apply the fix, then verification tests. Preserved for backwards compatibility.
 
-### `agent_implement.bat.template`
+### `agent_implement.bat.template` (legacy)
 
-Build setup commands, then invokes Cursor to implement the feature, then post-implementation tests. Used by the `implementation_worker` and `heavy_remote_escalation` profiles.
+Build setup, then invokes Cursor, then post-implementation tests. Preserved for backwards compatibility.
 
 ---
 
@@ -73,10 +80,11 @@ Build setup commands, then invokes Cursor to implement the feature, then post-im
 
 ### Variable value validation
 
-`TemplateRenderer._validate_variable_values()` rejects any variable value containing shell metacharacters (`&`, `|`, `<`, `>`, `;`) to prevent injection. Two keys are exempt:
+`TemplateRenderer._validate_variable_values()` rejects any variable value containing shell metacharacters (`&`, `|`, `<`, `>`, `;`) to prevent injection. Three keys are exempt:
 
 - `BUILD_COMMANDS` — generated internally by `_format_commands()` and intentionally uses redirection syntax (`>>`, `2>>`).
 - `TEST_COMMANDS` — same as above.
+- `AGENT_INVOCATION` — generated internally by the agent adapter's `build_invocation()` method.
 
 ### Command allowlist
 

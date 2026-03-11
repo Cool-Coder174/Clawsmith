@@ -58,12 +58,38 @@ class OpenClawConfig(BaseModel):
     webhook_secret: str = ""
 
 
+class AgentOverride(BaseModel):
+    """Per-agent CLI configuration overrides."""
+
+    executable: str | None = None
+    extra_flags: list[str] = Field(default_factory=list)
+    model_mapping: dict[str, str] = Field(default_factory=dict)
+
+
+class AgentsConfig(BaseModel):
+    """Configuration for the generic agent CLI runtime."""
+
+    default_agent: str | None = Field(
+        default=None,
+        description="Preferred agent CLI id (e.g. 'claude_code'). None means auto-select.",
+    )
+    fallback_order: list[str] = Field(
+        default_factory=lambda: ["claude_code", "cursor", "gemini_cli", "openclaw"],
+    )
+    auto_detect: bool = True
+    default_approval_mode: str | None = None
+    default_output_format: str | None = None
+    show_experimental: bool = False
+    overrides: dict[str, AgentOverride] = Field(default_factory=dict)
+
+
 class ClawsmithConfig(BaseModel):
     models: ModelsConfig
     routing: RoutingConfig = RoutingConfig()
     execution: ExecutionConfig = ExecutionConfig()
     mcp_server: McpServerConfig = McpServerConfig()
     openclaw: OpenClawConfig = OpenClawConfig()
+    agents: AgentsConfig = AgentsConfig()
 
 
 _ENV_PREFIX = "CLAWSMITH_"
@@ -117,6 +143,7 @@ def _apply_env_overrides(data: dict[str, Any]) -> None:
 
 
 _REQUIRED_SECTIONS = ("models", "routing", "execution", "mcp_server", "openclaw")
+_OPTIONAL_SECTIONS = ("agents",)
 
 
 def _validate_path_field(value: str, field_name: str, errors: list[str]) -> None:

@@ -128,7 +128,10 @@ class ContextPacker:
                 rel = str(p.relative_to(self.root_path)).replace(os.sep, "/")
             except ValueError:
                 try:
-                    rel = str(p.resolve().relative_to(self.root_path.resolve())).replace(os.sep, "/")
+                    resolved_rel = p.resolve().relative_to(
+                        self.root_path.resolve()
+                    )
+                    rel = str(resolved_rel).replace(os.sep, "/")
                 except ValueError:
                     continue
 

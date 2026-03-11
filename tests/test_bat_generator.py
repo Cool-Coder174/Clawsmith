@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from config.config_loader import load_config
 from jobs.bat_generator import BatGenerator

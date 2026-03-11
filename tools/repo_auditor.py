@@ -116,7 +116,12 @@ class RepoAuditor:
 
     def _detect_package_managers(self, markers: dict[str, bool]) -> list[str]:
         managers: list[str] = []
-        if markers.get("pyproject.toml") or markers.get("setup.py") or markers.get("requirements.txt"):
+        has_python_pkg = (
+            markers.get("pyproject.toml")
+            or markers.get("setup.py")
+            or markers.get("requirements.txt")
+        )
+        if has_python_pkg:
             managers.append("pip")
         if markers.get("pnpm-lock.yaml"):
             managers.append("pnpm")

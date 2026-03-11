@@ -85,8 +85,30 @@ routing:
   high_complexity_threshold: 0.70
   ambiguity_bump_threshold: 0.60
 
+execution:
+  default_timeout: 300
+  max_retries: 2
+  artifacts_dir: artifacts
+  logs_dir: logs
+  allowed_commands:
+    - cursor
+    - python
+    - pip
+    - pytest
+    - ruff
+    - mypy
+
 mcp_server:
   port: 8765
+
+openclaw:
+  skill_name: ClawSmith
+  mcp_endpoint: "http://127.0.0.1:8765/sse"
+  webhook_secret: ""
+
+agents:
+  default_agent: null
+  auto_detect: false
 """
     yaml_path = tmp_path / "settings.yaml"
     yaml_path.write_text(content, encoding="utf-8")

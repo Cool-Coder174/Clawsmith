@@ -66,3 +66,16 @@ openclaw:
   skill_name: ClawSmith
   mcp_endpoint: "http://127.0.0.1:8765/sse"
   webhook_secret: ""   # set via env OPENCLAW_WEBHOOK_SECRET
+
+agents:
+  default_agent: null              # null = auto-select best available CLI
+  fallback_order:
+    - claude_code
+    - cursor
+    - gemini_cli
+    - openclaw
+  auto_detect: true                # scan for installed agent CLIs on startup
+  default_approval_mode: null      # agent-specific approval/sandbox mode
+  default_output_format: null      # 'json', 'text', or null for agent default
+  show_experimental: false         # show adapters marked experimental in doctor output
+  overrides: {}                    # per-agent overrides, e.g. cursor: {executable: "C:\\...\\cursor.exe"}

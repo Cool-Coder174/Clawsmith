@@ -2,14 +2,14 @@
 
 ## What Is ClawSmith
 
-ClawSmith is a **local-first AI orchestration system** that audits a repository, classifies task complexity, routes to the cheapest capable model tier (local Ollama or cloud API), generates structured prompts, and executes work through controlled `.bat` job scripts. Every stage is exposed as an MCP tool for seamless integration with editors like Cursor.
+ClawSmith is a **CLI-first orchestration and deployment layer for coding agents**. It audits a repository, classifies task complexity, auto-detects installed agent CLIs (Cursor, Claude Code, Gemini, OpenClaw), routes to the cheapest capable model tier, generates structured prompts, and executes work through controlled `.bat` job scripts. Every stage is exposed as an MCP tool for seamless editor integration.
 
 ## Who It's For
 
 - **Solo developers** who want AI-assisted code tasks without sending all context to a premium API.
 - **Teams** wanting cost-controlled model routing — simple tasks stay local, complex tasks escalate to cloud.
-- **Cursor users** wanting MCP-integrated orchestration that plugs directly into their editor.
-- **Open-source contributors** building on a modular orchestration base with swappable providers and profiles.
+- **Agent CLI users** wanting a unified orchestration layer across Cursor, Claude Code, Gemini, and other coding agents.
+- **Open-source contributors** building on a modular, agent-agnostic orchestration base with swappable providers, adapters, and profiles.
 
 ---
 
@@ -57,6 +57,13 @@ Clawsmith/
 │   └── schemas.py          # Pydantic data models
 ├── prompts/                # Prompt generation utilities
 ├── providers/              # LiteLLM provider abstraction + OpenClaw adapter
+├── agents/                 # Generic agent CLI runtime
+│   ├── adapters/           # Concrete adapters (Cursor, Claude Code, Gemini, OpenClaw)
+│   ├── base.py             # Abstract adapter interface
+│   ├── capabilities.py     # Capability enum
+│   ├── detector.py         # Auto-detection subsystem
+│   ├── registry.py         # Central adapter registry
+│   └── router.py           # Agent CLI selection logic
 ├── routing/                # Task classification + model routing
 │   ├── classifier.py       # Keyword-based complexity scoring
 │   └── router.py           # Maps classification → model tier
@@ -98,6 +105,12 @@ scripts\windows\run_orchestrator.bat --task "Fix the login bug" --repo-path "."
 # Generate an OpenClaw SKILL.md registration artifact
 clawsmith register-skill
 
+# Detect installed agent CLIs and show capability matrix
+clawsmith detect-agents
+
+# Run a task with a specific agent CLI
+clawsmith run-task --task "Fix the login bug" --repo-path . --agent claude_code
+
 # Switch models: edit config/settings.yaml → models.premium.model_name
 # e.g. change from openai/gpt-4o to anthropic/claude-3-opus
 ```
@@ -135,7 +148,7 @@ sequenceDiagram
 
 | Component | File | Responsibility |
 |---|---|---|
-| CLI | `orchestrator/cli.py` | Click entry-points (`run-task`, `audit`, `run-job`, `start-server`, `register-skill`) |
+| CLI | `orchestrator/cli.py` | Click entry-points (`run-task`, `audit`, `run-job`, `start-server`, `register-skill`, `detect-agents`) |
 | Pipeline | `orchestrator/pipeline.py` | End-to-end orchestration of all stages |
 | RepoAuditor | `tools/repo_auditor.py` | Detects languages, frameworks, CI, linters, markers |
 | RepoMapper | `tools/repo_mapper.py` | Builds a directory tree + detects entrypoints |
@@ -148,6 +161,9 @@ sequenceDiagram
 | JobSpecValidator | `jobs/schema_validator.py` | Safety + correctness checks before execution |
 | JobExecutor | `jobs/executor.py` | Runs `.bat` jobs with timeout and artifact capture |
 | MCP Server | `mcp_server/server.py` | Exposes all tools over SSE for editor integration |
+| Agent Registry | `agents/registry.py` | Manages CLI adapters, detection, and capability matrix |
+| Agent Router | `agents/router.py` | Selects best available agent CLI for a job |
+| Agent Detector | `agents/detector.py` | Auto-detects installed agent CLIs on the local machine |
 
 ---
 

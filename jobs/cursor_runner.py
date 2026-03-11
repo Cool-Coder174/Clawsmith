@@ -8,9 +8,9 @@ from pathlib import Path
 from string import Template
 
 from config.config_loader import get_config
+from jobs.schema_validator import JobSpecValidator, ValidationError
 from orchestrator.logging_setup import get_logger
 from orchestrator.schemas import ExecutionResult, JobSpec
-from jobs.schema_validator import JobSpecValidator, ValidationError
 
 _REPO_ROOT = Path(__file__).parent.parent
 _GENERATED_DIR = _REPO_ROOT / "jobs" / "generated"

@@ -10,10 +10,12 @@ task_type: prompt_polish
 working_directory: "."
 build_commands: []
 test_commands: []
-prompt_template: cursor_task.bat.template
+prompt_template: agent_task.bat.template
 variables:
   OBJECTIVE: "Polish and refine the draft prompt"
   CURSOR_PROMPT: "Improve this prompt for clarity and completeness"
+  AGENT_PROMPT: "Improve this prompt for clarity and completeness"
+agent_target: null
 provider_preference: prompt_polisher
 timeout_seconds: 120
 dry_run: false

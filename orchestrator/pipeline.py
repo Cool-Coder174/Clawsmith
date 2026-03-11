@@ -1,10 +1,12 @@
-"""Full 10-step orchestration pipeline."""
+"""Full 10-step orchestration pipeline with generic agent CLI support."""
 
 from __future__ import annotations
 
 import time
 from pathlib import Path
 
+from agents.registry import get_agent_registry
+from agents.router import AgentNotAvailableError, AgentRouter
 from config.config_loader import get_config
 from jobs.executor import JobExecutor
 from orchestrator.logging_setup import get_logger
@@ -29,17 +31,21 @@ SYSTEM_PROMPT = (
     "precisely, following the repo's existing conventions."
 )
 
-_CODE_INDICATORS = ("```", "def ", "class ", "import ", "from ", "function ", "const ", "let ", "var ")
+_CODE_INDICATORS = (
+    "```", "def ", "class ", "import ", "from ",
+    "function ", "const ", "let ", "var ",
+)
 
 
 class OrchestrationPipeline:
-    """Runs the full audit → route → prompt → complete → execute pipeline."""
+    """Runs the full audit -> route -> prompt -> complete -> execute pipeline."""
 
     async def run(
         self,
         task_description: str,
         repo_path: str,
         dry_run: bool = False,
+        agent_target: str | None = None,
     ) -> PipelineResult:
         start = time.monotonic()
         root = Path(repo_path).resolve()
@@ -71,9 +77,42 @@ class OrchestrationPipeline:
             logger.info("Step 4/10: Classifying task")
             classification = TaskClassifier().classify(task_description, context_packet)
 
-            # 5. Route
+            # 5. Route to model tier
             logger.info("Step 5/10: Routing to model tier")
             routing_decision = ModelRouter().route_task(classification)
+
+            # 5b. Route to agent CLI
+            agent_id = "none"
+            agent_display_name = "ClawSmith"
+            agent_invocation = ""
+            try:
+                config = get_config()
+                registry = get_agent_registry(auto_detect=config.agents.auto_detect)
+                agent_router = AgentRouter(
+                    registry,
+                    default_agent=config.agents.default_agent,
+                    fallback_order=config.agents.fallback_order,
+                )
+                agent_decision = agent_router.select_agent(
+                    requested_agent=agent_target,
+                    needs_headless=True,
+                )
+                agent_id = agent_decision.agent_id
+                agent_display_name = agent_decision.adapter.display_name
+                routing_decision.agent_target = agent_id
+
+                invocation_spec = agent_decision.adapter.build_invocation(
+                    prompt=task_description[:500],
+                    working_directory=str(root),
+                    model=None,
+                    timeout_seconds=config.execution.default_timeout,
+                )
+                agent_invocation = " ".join(
+                    f'"{a}"' if " " in a else a for a in invocation_spec.args
+                )
+                logger.info("Step 5b: Selected agent CLI: %s", agent_id)
+            except AgentNotAvailableError:
+                logger.info("Step 5b: No agent CLI available; proceeding without agent invocation")
 
             prompt_gen = PromptGenerator()
 
@@ -137,24 +176,31 @@ class OrchestrationPipeline:
             else:
                 logger.info("Step 8/10: Skipping dispatch (dry-run)")
 
-            # 9. Execute job (conditional — only when code changes are detected)
+            # 9. Execute job
             execution_result = None
             completion_text = completion.get("text", "") if completion else ""
             has_code = any(indicator in completion_text for indicator in _CODE_INDICATORS)
 
             if completion and has_code and not dry_run:
-                logger.info("Step 9/10: Executing job")
+                logger.info("Step 9/10: Executing job via agent '%s'", agent_id)
                 config = get_config()
                 job_spec = JobSpec(
                     task_type=classification.task_type,
                     objective=task_description[:200],
                     working_directory=str(root),
                     prompt=generated_prompt,
+                    agent_target=agent_id,
                     provider_preference=routing_decision.selected_tier,
                     timeout_seconds=config.execution.default_timeout,
                     dry_run=dry_run,
                 )
-                execution_result = await JobExecutor().execute(job_spec, dry_run=dry_run)
+                execution_result = await JobExecutor().execute(
+                    job_spec,
+                    dry_run=dry_run,
+                    agent_invocation=agent_invocation,
+                    agent_id=agent_id,
+                    agent_display_name=agent_display_name,
+                )
             elif dry_run:
                 logger.info("Step 9/10: Skipping execution (dry-run mode)")
             else:

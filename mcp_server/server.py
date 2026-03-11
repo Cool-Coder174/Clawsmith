@@ -14,10 +14,10 @@ from config.config_loader import get_config
 from jobs.executor import JobExecutor
 from orchestrator.logging_setup import get_logger
 from orchestrator.schemas import ContextPacket, JobSpec
+from prompts.generator import PromptGenerator
 from routing.classifier import TaskClassifier
 from routing.cost_estimator import CostEstimator
 from routing.router import ModelRouter
-from prompts.generator import PromptGenerator
 from tools.build_detector import BuildDetector
 from tools.context_packer import ContextPacker
 from tools.repo_auditor import RepoAuditor
@@ -60,7 +60,7 @@ async def _run_command_async(
         raw_stdout, raw_stderr = await asyncio.wait_for(
             proc.communicate(), timeout=timeout
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         try:
             proc.kill()  # type: ignore[possibly-undefined]
         except Exception:
@@ -96,7 +96,7 @@ def _resolve_repo_path(repo_path: str) -> Path:
 
 @mcp.tool
 async def repo_audit(repo_path: str) -> str:
-    """Audit a repository and return a detailed report of its languages, frameworks, CI, and tooling."""
+    """Audit a repository and return a detailed report."""
     try:
         root = _resolve_repo_path(repo_path)
         report = RepoAuditor(root).audit()
@@ -164,8 +164,12 @@ async def cost_estimate(
 
 
 @mcp.tool
-async def cursor_run_job(job_spec_json: str) -> str:
-    """Parse a JobSpec from JSON and execute it through the full job pipeline."""
+async def agent_run_job(job_spec_json: str) -> str:
+    """Parse a JobSpec from JSON and execute it through the full job pipeline.
+
+    The job's ``agent_target`` field selects which agent CLI to use.
+    If not set, the system auto-selects the best available agent.
+    """
     try:
         job = JobSpec.model_validate_json(job_spec_json)
     except Exception as exc:
@@ -173,23 +177,65 @@ async def cursor_run_job(job_spec_json: str) -> str:
             {"error": f"Invalid JobSpec JSON: {exc}"}, indent=2
         )
     try:
-        result = await JobExecutor().execute(job, dry_run=job.dry_run)
+        agent_id = "none"
+        agent_invocation = ""
+        agent_display_name = "ClawSmith"
+        try:
+            from agents.registry import get_agent_registry
+            from agents.router import AgentRouter
+
+            cfg = get_config()
+            registry = get_agent_registry(auto_detect=cfg.agents.auto_detect)
+            router = AgentRouter(
+                registry,
+                default_agent=cfg.agents.default_agent,
+                fallback_order=cfg.agents.fallback_order,
+            )
+            decision = router.select_agent(
+                requested_agent=job.agent_target, needs_headless=True,
+            )
+            agent_id = decision.agent_id
+            agent_display_name = decision.adapter.display_name
+            spec = decision.adapter.build_invocation(
+                prompt=job.prompt[:500],
+                working_directory=job.working_directory,
+                timeout_seconds=job.timeout_seconds,
+            )
+            agent_invocation = " ".join(
+                f'"{a}"' if " " in a else a for a in spec.args
+            )
+        except Exception:
+            pass
+
+        result = await JobExecutor().execute(
+            job,
+            dry_run=job.dry_run,
+            agent_invocation=agent_invocation,
+            agent_id=agent_id,
+            agent_display_name=agent_display_name,
+        )
         return result.model_dump_json(indent=2)
     except Exception as exc:
         return json.dumps({"error": str(exc)}, indent=2)
 
 
 @mcp.tool
-async def cursor_run_bat(bat_path: str, timeout: int = 300) -> str:
+async def cursor_run_job(job_spec_json: str) -> str:
+    """Legacy alias for agent_run_job. Prefer agent_run_job for new integrations."""
+    return await agent_run_job(job_spec_json)
+
+
+@mcp.tool
+async def agent_run_bat(bat_path: str, timeout: int = 300) -> str:
     """Execute a .bat file within the workspace, with path-escape protection."""
     try:
         resolved = Path(bat_path).resolve()
         try:
             resolved.relative_to(_REPO_ROOT.resolve())
-        except ValueError:
+        except ValueError as exc:
             raise ValueError(
                 f"Path {resolved} is outside the workspace root {_REPO_ROOT.resolve()}"
-            )
+            ) from exc
         if not resolved.exists():
             raise ValueError(f"File does not exist: {resolved}")
         if resolved.suffix.lower() != ".bat":
@@ -201,6 +247,24 @@ async def cursor_run_bat(bat_path: str, timeout: int = 300) -> str:
             timeout=timeout,
         )
         return json.dumps(result, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, indent=2)
+
+
+@mcp.tool
+async def cursor_run_bat(bat_path: str, timeout: int = 300) -> str:
+    """Legacy alias for agent_run_bat. Prefer agent_run_bat for new integrations."""
+    return await agent_run_bat(bat_path, timeout)
+
+
+@mcp.tool
+async def detect_agent_clis() -> str:
+    """Detect installed agent CLIs and return a capability matrix."""
+    try:
+        from agents.registry import get_agent_registry
+        registry = get_agent_registry(auto_detect=True)
+        matrix = registry.get_capability_matrix()
+        return json.dumps(matrix, indent=2)
     except Exception as exc:
         return json.dumps({"error": str(exc)}, indent=2)
 
@@ -269,11 +333,11 @@ async def git_create_worktree(
         wt = Path(worktree_path).resolve()
         try:
             wt.relative_to(_REPO_ROOT.resolve())
-        except ValueError:
+        except ValueError as exc:
             if wt.drive != _REPO_ROOT.resolve().drive:
                 raise ValueError(
                     f"Worktree path {wt} is outside the workspace drive"
-                )
+                ) from exc
 
         result = await _run_command_async(
             ["git", "worktree", "add", str(wt), "-b", branch_name],

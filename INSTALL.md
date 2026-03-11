@@ -6,7 +6,7 @@
 |---|---|
 | **Python 3.11+** | Verify with `python --version`. On Windows you can also use `py -3.11`. |
 | **git** | Required for cloning. Verify with `git --version`. |
-| **Cursor CLI** *(optional)* | Set `CURSOR_CLI_PATH` in `.env` or add `cursor` to `PATH`. Required only for jobs that invoke Cursor. |
+| **At least one agent CLI** *(recommended)* | ClawSmith auto-detects: Cursor (`cursor`), Claude Code (`claude`), Gemini (`gemini`), OpenClaw (`openclaw`). Install at least one. |
 | **Ollama** *(optional)* | Required for local model tiers (`local_router`, `local_code`). Pull models with `ollama pull mistral` and `ollama pull codellama`. |
 
 ---
@@ -151,6 +151,35 @@ ClawSmith ships with five bundled agent profiles in `config/agent_profiles/`:
 | `heavy_remote_escalation` | refactor | `premium` |
 
 To customise a profile, copy any YAML file from `config/agent_profiles/`, change the `name` field (must be unique), adjust `task_type`, `prompt_template`, `variables`, and `provider_preference` as needed. See [docs/agent_profiles.md](docs/agent_profiles.md) for the full schema reference.
+
+---
+
+## Agent CLI Detection
+
+ClawSmith auto-detects installed coding agent CLIs on startup. To manually check which agents are available:
+
+```
+clawsmith detect-agents
+```
+
+Supported agent CLIs:
+
+| Agent | Executable | How to install |
+|---|---|---|
+| Cursor Agent | `cursor` | Install from https://cursor.sh, set `CURSOR_CLI_PATH` in `.env` or add to `PATH` |
+| Claude Code | `claude` | `npm install -g @anthropic-ai/claude-code` |
+| Gemini CLI | `gemini` | Install from Google's official distribution |
+| OpenClaw | `openclaw` | Configure endpoint in `config/settings.yaml` under `openclaw` section |
+
+You can override executable paths in `config/settings.yaml`:
+
+```yaml
+agents:
+  default_agent: claude_code
+  overrides:
+    cursor:
+      executable: "C:\\path\\to\\cursor.exe"
+```
 
 ---
 

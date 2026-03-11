@@ -66,7 +66,7 @@ class ProfileLoader:
         if variable_overrides:
             merged_vars.update(variable_overrides)
 
-        prompt_text = merged_vars.get("CURSOR_PROMPT", "")
+        prompt_text = merged_vars.get("CURSOR_PROMPT", merged_vars.get("AGENT_PROMPT", ""))
         prompt_rendered = Template(prompt_text).safe_substitute(merged_vars)
 
         return JobSpec(
@@ -77,8 +77,12 @@ class ProfileLoader:
             build_commands=list(profile.build_commands),
             test_commands=list(profile.test_commands),
             prompt=prompt_rendered,
+            agent_target=profile.agent_target,
             provider_preference=profile.provider_preference,
+            model_preference=profile.model_preference,
             timeout_seconds=profile.timeout_seconds,
             dry_run=profile.dry_run,
             retries=profile.retries,
+            output_format=profile.output_format,
+            approval_mode=profile.approval_mode,
         )

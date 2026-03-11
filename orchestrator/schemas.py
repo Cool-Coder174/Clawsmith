@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class TaskType(str, Enum):
+class TaskType(StrEnum):
     audit = "audit"
     bugfix = "bugfix"
     implementation = "implementation"
@@ -18,7 +18,7 @@ class TaskType(str, Enum):
     prompt_polish = "prompt_polish"
 
 
-class ModelTier(str, Enum):
+class ModelTier(StrEnum):
     local_router = "local_router"
     local_code = "local_code"
     premium = "premium"
@@ -26,6 +26,12 @@ class ModelTier(str, Enum):
 
 
 class JobSpec(BaseModel):
+    """Agent-agnostic job specification.
+
+    This schema describes a unit of work that can be dispatched to any
+    supported agent CLI (Cursor, Claude Code, Gemini, OpenClaw, etc.).
+    """
+
     model_config = ConfigDict(frozen=False)
 
     id: str = Field(default_factory=lambda: uuid4().hex[:12])
@@ -36,10 +42,34 @@ class JobSpec(BaseModel):
     build_commands: list[str] = Field(default_factory=list)
     test_commands: list[str] = Field(default_factory=list)
     prompt: str
+    prompt_file: str | None = None
+    agent_target: str | None = Field(
+        default=None,
+        description="Agent CLI to use, e.g. 'cursor', 'claude_code', 'gemini_cli'. "
+        "None means auto-select.",
+    )
     provider_preference: ModelTier = ModelTier.local_code
+    model_preference: str | None = Field(
+        default=None,
+        description="Explicit model name to pass to the agent CLI, if it supports model switching.",
+    )
+    invocation_mode: str = Field(
+        default="headless",
+        description="'headless' for non-interactive, 'interactive' for chat mode.",
+    )
     timeout_seconds: int = Field(default=300, ge=10, le=3600)
     dry_run: bool = False
     retries: int = Field(default=1, ge=0, le=5)
+    output_format: str | None = Field(
+        default=None, description="'json', 'text', or None for agent default."
+    )
+    approval_mode: str | None = Field(
+        default=None,
+        description="Agent-specific approval/sandbox mode, e.g. 'auto', 'manual', 'sandbox'.",
+    )
+    environment_overrides: dict[str, str] = Field(default_factory=dict)
+    artifact_directory: str | None = None
+    log_directory: str | None = None
 
 
 class ContextPacket(BaseModel):
@@ -77,6 +107,10 @@ class RoutingDecision(BaseModel):
     confidence_score: float
     estimated_tokens: int
     estimated_cost_usd: float = 0.0
+    agent_target: str | None = Field(
+        default=None,
+        description="Selected agent CLI id, if agent routing was performed.",
+    )
 
 
 class ExecutionResult(BaseModel):
@@ -90,10 +124,18 @@ class ExecutionResult(BaseModel):
     duration_seconds: float
     success: bool
     error_message: str | None = None
+    agent_used: str | None = Field(
+        default=None, description="Agent CLI id that executed this job."
+    )
 
 
 class AgentProfile(BaseModel):
-    """Profile-based orchestration configuration for agent workers."""
+    """Profile-based orchestration configuration for agent workers.
+
+    Profiles are agent-agnostic: the ``agent_target`` field specifies which
+    CLI adapter to use.  When set to ``None`` or ``"auto"``, the system
+    auto-selects the best available agent.
+    """
 
     model_config = ConfigDict(frozen=False)
 
@@ -103,14 +145,22 @@ class AgentProfile(BaseModel):
     working_directory: str = "."
     build_commands: list[str] = Field(default_factory=list)
     test_commands: list[str] = Field(default_factory=list)
-    prompt_template: str = "cursor_task.bat.template"
+    prompt_template: str = "agent_task.bat.template"
     variables: dict[str, str] = Field(default_factory=dict)
+    agent_target: str | None = Field(
+        default=None,
+        description="Agent CLI id (e.g. 'cursor', 'claude_code', 'gemini_cli'). "
+        "None or 'auto' means auto-select.",
+    )
     provider_preference: ModelTier = ModelTier.local_code
+    model_preference: str | None = None
     timeout_seconds: int = Field(default=300, ge=10, le=3600)
     dry_run: bool = False
     retries: int = Field(default=1, ge=0, le=5)
     allowed_tiers: list[ModelTier] = Field(default_factory=lambda: list(ModelTier))
     system_prompt_override: str | None = None
+    output_format: str | None = None
+    approval_mode: str | None = None
     tags: list[str] = Field(default_factory=list)
     metadata: dict = Field(default_factory=dict)
 

@@ -87,17 +87,27 @@ class BuildDetector:
         has_tests_dir = (self.root_path / "tests").is_dir()
         pytest_in_deps = "pytest" in all_config_text
 
-        if has_pytest_ini or has_setup_cfg_pytest or has_conftest or has_tests_dir or pytest_in_deps:
+        any_pytest = (
+            has_pytest_ini or has_setup_cfg_pytest
+            or has_conftest or has_tests_dir or pytest_in_deps
+        )
+        if any_pytest:
             add("python", "pytest", "test")
 
-        has_ruff_toml = (self.root_path / "ruff.toml").exists() or (self.root_path / ".ruff.toml").exists()
+        has_ruff_toml = (
+            (self.root_path / "ruff.toml").exists()
+            or (self.root_path / ".ruff.toml").exists()
+        )
         ruff_in_deps = "ruff" in all_config_text
 
         if has_ruff_toml or ruff_in_deps:
             add("python", "ruff check .", "lint")
             add("python", "ruff format .", "format")
 
-        has_mypy_ini = (self.root_path / "mypy.ini").exists() or (self.root_path / ".mypy.ini").exists()
+        has_mypy_ini = (
+            (self.root_path / "mypy.ini").exists()
+            or (self.root_path / ".mypy.ini").exists()
+        )
         mypy_in_deps = "mypy" in all_config_text
 
         if has_mypy_ini or mypy_in_deps:

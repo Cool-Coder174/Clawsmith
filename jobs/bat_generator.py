@@ -1,9 +1,15 @@
-"""Generates Windows .bat scripts from a validated JobSpec."""
+"""Generates Windows .bat scripts from a validated JobSpec.
+
+The generator is agent-agnostic: when an ``agent_invocation`` command
+is provided, it is embedded into the generated script.  The generated
+script handles build commands, the agent invocation, and test commands
+with timeout checking throughout.
+"""
 
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from config.config_loader import get_config
@@ -16,7 +22,14 @@ _GENERATED_DIR = _REPO_ROOT / "jobs" / "generated"
 class BatGenerator:
     """Produces a runnable ``.bat`` file and metadata for a given job."""
 
-    def generate(self, job: JobSpec) -> Path:
+    def generate(
+        self,
+        job: JobSpec,
+        *,
+        agent_invocation: str = "",
+        agent_id: str = "none",
+        agent_display_name: str = "ClawSmith",
+    ) -> Path:
         """Create the ``.bat`` script and write metadata. Returns the bat path."""
         _GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -24,15 +37,17 @@ class BatGenerator:
         artifact_dir = _REPO_ROOT / config.execution.artifacts_dir / job.id
         artifact_dir.mkdir(parents=True, exist_ok=True)
 
-        timestamp = datetime.now(timezone.utc).isoformat()
+        timestamp = datetime.now(UTC).isoformat()
 
         build_block = self._commands_block(job.build_commands, "BUILD")
         test_block = self._commands_block(job.test_commands, "TEST")
+        agent_block = self._agent_block(agent_invocation, agent_id) if agent_invocation else ""
 
         content = (
             "@echo off\n"
             "setlocal enabledelayedexpansion\n"
             f":: ClawSmith Job: {job.id}\n"
+            f":: Agent: {agent_id} ({agent_display_name})\n"
             f":: Task Type: {job.task_type.value}\n"
             f":: Objective: {job.objective}\n"
             f":: Generated: {timestamp}\n"
@@ -46,7 +61,7 @@ class BatGenerator:
             "set EXIT_CODE=0\n"
             "\n"
             ":: Record start time as seconds since midnight\n"
-            'for /f "tokens=1-3 delims=:." %%a in ("%TIME: =0%") do set /a _START_S=%%a*3600+%%b*60+%%c\n'
+            'for /f "tokens=1-3 delims=:." %%a in ("%TIME: =0%") do set /a _START_S=%%a*3600+%%b*60+%%c\n'  # noqa: E501
             "\n"
             f'cd /d "{job.working_directory}"\n'
             "if errorlevel 1 (\n"
@@ -55,6 +70,7 @@ class BatGenerator:
             ")\n"
             "\n"
             'echo [ClawSmith] Starting job %JOB_ID% > "%STDOUT_LOG%"\n'
+            f'echo [ClawSmith] Agent: {agent_id} >> "%STDOUT_LOG%"\n'
             f'echo [ClawSmith] Objective: {job.objective} >> "%STDOUT_LOG%"\n'
             f'echo [ClawSmith] Timeout: {job.timeout_seconds}s >> "%STDOUT_LOG%"\n'
             "\n"
@@ -63,6 +79,7 @@ class BatGenerator:
             "call :CHECK_TIMEOUT\n"
             "if !EXIT_CODE! equ -2 goto :TIMEOUT_EXIT\n"
             "\n"
+            f"{agent_block}"
             ":: --- Test Commands ---\n"
             f"{test_block}\n"
             "call :CHECK_TIMEOUT\n"
@@ -71,12 +88,12 @@ class BatGenerator:
             "goto :FINISH\n"
             "\n"
             ":CHECK_TIMEOUT\n"
-            'for /f "tokens=1-3 delims=:." %%a in ("%TIME: =0%") do set /a _NOW_S=%%a*3600+%%b*60+%%c\n'
+            'for /f "tokens=1-3 delims=:." %%a in ("%TIME: =0%") do set /a _NOW_S=%%a*3600+%%b*60+%%c\n'  # noqa: E501
             "set /a _ELAPSED=_NOW_S-_START_S\n"
             "if !_ELAPSED! lss 0 set /a _ELAPSED=_ELAPSED+86400\n"
             "if !_ELAPSED! geq %TIMEOUT_SECONDS% (\n"
             "    set EXIT_CODE=-2\n"
-            '    echo [TIMEOUT] Job exceeded %TIMEOUT_SECONDS%s limit after !_ELAPSED!s >> "%STDOUT_LOG%"\n'
+            '    echo [TIMEOUT] Job exceeded %TIMEOUT_SECONDS%s limit after !_ELAPSED!s >> "%STDOUT_LOG%"\n'  # noqa: E501
             '    echo [TIMEOUT] exceeded >> "%STDERR_LOG%"\n'
             '    echo -2 > "%ARTIFACT_DIR%\\timeout.txt"\n'
             ")\n"
@@ -95,6 +112,8 @@ class BatGenerator:
 
         metadata = {
             "job": job.model_dump(mode="json"),
+            "agent_id": agent_id,
+            "agent_display_name": agent_display_name,
             "generated_at": timestamp,
             "bat_path": str(bat_path),
         }
@@ -116,3 +135,15 @@ class BatGenerator:
             lines.append(f'{cmd} >> "%STDOUT_LOG%" 2>> "%STDERR_LOG%"')
             lines.append("if errorlevel 1 set EXIT_CODE=1")
         return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _agent_block(agent_invocation: str, agent_id: str) -> str:
+        return (
+            f":: --- Agent Invocation ({agent_id}) ---\n"
+            f'echo [AGENT] Invoking {agent_id} >> "%STDOUT_LOG%"\n'
+            f'{agent_invocation} >> "%STDOUT_LOG%" 2>> "%STDERR_LOG%"\n'
+            "if errorlevel 1 set EXIT_CODE=1\n"
+            "call :CHECK_TIMEOUT\n"
+            "if !EXIT_CODE! equ -2 goto :TIMEOUT_EXIT\n"
+            "\n"
+        )

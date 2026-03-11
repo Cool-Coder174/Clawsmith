@@ -1,4 +1,9 @@
-"""Job executor: validates, generates, and runs .bat scripts for ClawSmith jobs."""
+"""Job executor: validates, generates, and runs .bat scripts for ClawSmith jobs.
+
+The executor is agent-agnostic.  It receives an optional agent invocation
+command to embed into generated .bat scripts.  The agent adapter is
+resolved upstream by the pipeline or profile loader.
+"""
 
 from __future__ import annotations
 
@@ -9,11 +14,10 @@ from pathlib import Path
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential
 
 from config.config_loader import get_config
-from orchestrator.logging_setup import get_logger
-from orchestrator.schemas import ExecutionResult, JobSpec
-
 from jobs.bat_generator import BatGenerator
 from jobs.schema_validator import JobSpecValidator, ValidationError
+from orchestrator.logging_setup import get_logger
+from orchestrator.schemas import ExecutionResult, JobSpec
 
 _REPO_ROOT = Path(__file__).parent.parent
 
@@ -23,7 +27,15 @@ logger = get_logger("executor")
 class JobExecutor:
     """Validates a job, generates its .bat file, and runs it with retry logic."""
 
-    async def execute(self, job: JobSpec, dry_run: bool = False) -> ExecutionResult:
+    async def execute(
+        self,
+        job: JobSpec,
+        dry_run: bool = False,
+        *,
+        agent_invocation: str = "",
+        agent_id: str = "none",
+        agent_display_name: str = "ClawSmith",
+    ) -> ExecutionResult:
         """End-to-end execution pipeline for a single job."""
         try:
             JobSpecValidator().validate(job, workspace_root=_REPO_ROOT, dry_run=dry_run)
@@ -37,6 +49,7 @@ class JobExecutor:
                 duration_seconds=0.0,
                 success=False,
                 error_message=str(exc),
+                agent_used=agent_id,
             )
 
         if dry_run:
@@ -45,15 +58,23 @@ class JobExecutor:
             return ExecutionResult(
                 job_id=job.id,
                 exit_code=0,
-                stdout=f"[dry-run] Would execute {len(cmds)} commands",
+                stdout=f"[dry-run] Would execute {len(cmds)} commands via {agent_id}",
                 stderr="",
                 duration_seconds=0.0,
                 success=True,
                 artifacts=[],
+                agent_used=agent_id,
             )
 
-        bat_path = BatGenerator().generate(job)
-        return await self.run_bat(job, bat_path)
+        bat_path = BatGenerator().generate(
+            job,
+            agent_invocation=agent_invocation,
+            agent_id=agent_id,
+            agent_display_name=agent_display_name,
+        )
+        result = await self.run_bat(job, bat_path)
+        result.agent_used = agent_id
+        return result
 
     async def run_bat(self, job: JobSpec, bat_path: Path) -> ExecutionResult:
         """Run a pre-generated bat file with retry logic.
@@ -64,7 +85,10 @@ class JobExecutor:
         config = get_config()
         artifact_dir = _REPO_ROOT / config.execution.artifacts_dir / job.id
 
-        logger.info("Starting job %s (timeout=%ds, retries=%d)", job.id, job.timeout_seconds, job.retries)
+        logger.info(
+            "Starting job %s (timeout=%ds, retries=%d)",
+            job.id, job.timeout_seconds, job.retries,
+        )
 
         result: ExecutionResult | None = None
         try:
@@ -80,7 +104,9 @@ class JobExecutor:
                         attempt.retry_state.attempt_number,
                         job.retries + 1,
                     )
-                    result = await self._run_bat(bat_path, job.timeout_seconds, artifact_dir, job.id)
+                    result = await self._run_bat(
+                        bat_path, job.timeout_seconds, artifact_dir, job.id,
+                    )
                     if not result.success:
                         raise RuntimeError(result.error_message or f"Job {job.id} failed")
         except Exception:
@@ -97,6 +123,7 @@ class JobExecutor:
             )
 
         logger.info("Job %s completed successfully", job.id)
+        assert result is not None
         return result
 
     async def _run_bat(
@@ -119,7 +146,7 @@ class JobExecutor:
             raw_stdout, raw_stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
             elapsed = time.monotonic() - start
             timeout_marker = artifact_dir / "timeout.txt"

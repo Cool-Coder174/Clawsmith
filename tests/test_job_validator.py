@@ -69,7 +69,7 @@ def test_timeout_too_low_rejected(tmp_repo):
     )
     validator.validate(job, workspace_root=tmp_repo.parent, dry_run=True)
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         JobSpec(
             task_type=TaskType.bugfix,
             objective="test",
@@ -83,7 +83,7 @@ def test_timeout_too_low_rejected(tmp_repo):
 
 
 def test_timeout_too_high_rejected(tmp_repo):
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         JobSpec(
             task_type=TaskType.bugfix,
             objective="test",

@@ -221,3 +221,56 @@ The final `complexity_score` is: `0.30 × files + 0.25 × ambiguity + 0.25 × ar
 2. Use a LiteLLM-compatible model string (e.g., `anthropic/claude-3-opus`, `openrouter/meta-llama/llama-3`).
 3. Set the required API key in `.env` (LiteLLM resolves keys from environment automatically).
 4. No code changes required — the registry resolves dynamically from config.
+
+---
+
+## Agent CLI Runtime
+
+ClawSmith uses a generic agent adapter system instead of a hardcoded Cursor runner.
+
+### Architecture
+
+```
+agents/
+├── base.py             # AgentAdapter ABC, DetectionResult, InvocationSpec, AgentRunResult
+├── capabilities.py     # AgentCapability enum
+├── detector.py         # AgentDetector — scans PATH, common locations, env vars
+├── registry.py         # AgentRegistry — manages adapters + detection state
+├── router.py           # AgentRouter — selects best agent for a job
+└── adapters/
+    ├── cursor_adapter.py        # Cursor Agent CLI
+    ├── claude_code_adapter.py   # Claude Code (claude -p)
+    ├── gemini_adapter.py        # Gemini CLI (gemini -p)
+    └── openclaw_adapter.py      # OpenClaw ACP bridge (gateway, not local CLI)
+```
+
+### Supported Agent CLIs
+
+| Agent | ID | Headless | Model Switching | JSON Output | MCP | ACP |
+|---|---|---|---|---|---|---|
+| Cursor Agent | `cursor` | Yes | No | No | Yes | No |
+| Claude Code | `claude_code` | Yes | Yes | Yes | Yes | No |
+| Gemini CLI | `gemini_cli` | Yes | Yes | Yes | No | No |
+| OpenClaw | `openclaw` | Yes | No | Yes | No | Yes |
+
+### Detection Flow
+
+1. `AgentDetector` iterates over all registered adapters.
+2. For each adapter, it searches `PATH` via `shutil.which`, then common Windows install locations, then env var overrides (e.g. `CURSOR_CLI_PATH`).
+3. If an executable is found, the detector runs the adapter's `version_commands` to confirm version.
+4. Results include: found/not-found, executable path, version string, confidence score.
+
+### Agent Selection Flow
+
+1. If `--agent <id>` is specified on the CLI or `agent_target` is set in the job/profile, that agent is used.
+2. Otherwise, `agents.default_agent` from config is checked.
+3. Otherwise, the first available agent from `agents.fallback_order` that meets capability requirements is selected.
+4. Gateway adapters (OpenClaw) are deprioritised when `prefer_local=True`.
+5. If no agent is available, the system raises `AgentNotAvailableError` with installation hints.
+
+### Adding a Custom Agent
+
+1. Create a new adapter class in `agents/adapters/` that extends `AgentAdapter`.
+2. Implement all abstract properties and methods: `agent_id`, `display_name`, `executable_names`, `version_commands`, `capabilities`, `build_invocation`, `parse_result`.
+3. Register it in `AgentRegistry.register_builtins()` or via config.
+4. Run `clawsmith detect-agents` to verify detection.

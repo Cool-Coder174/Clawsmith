@@ -12,10 +12,12 @@ working_directory: "."
 build_commands: []
 test_commands:
   - "python -m pytest tests/ -v"
-prompt_template: agent_implement.bat.template
+prompt_template: agent_task.bat.template
 variables:
   OBJECTIVE: "Perform complex refactor using premium model"
   CURSOR_PROMPT: "Perform the architectural refactor as described"
+  AGENT_PROMPT: "Perform the architectural refactor as described"
+agent_target: null
 provider_preference: premium
 timeout_seconds: 1800
 dry_run: false
