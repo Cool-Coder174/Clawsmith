@@ -109,22 +109,18 @@ class CliAgentBackend(ExecutionBackend):
 
         if self._adapter:
             args, env = self._build_adapter_args(prompt, cwd, env, use_file, phase_index)
-            if use_file:
-                prompt_file_path = self._temp_files[-1] if self._temp_files else None
-                if prompt_file_path:
-                    result.prompt_file = str(prompt_file_path)
-        elif use_file:
+            prompt_file_path = self._temp_files[-1] if self._temp_files else None
+            if prompt_file_path:
+                result.prompt_file = str(prompt_file_path)
+        else:
             prompt_file_path = self._write_prompt_file(prompt, phase_index)
             result.prompt_file = str(prompt_file_path)
-            env[env_name] = str(prompt_file_path)
+            env[env_name] = prompt
             args = self._build_file_args(prompt_file_path)
             logger.info(
-                "Phase %d prompt too large for env var (%d bytes), using file: %s",
-                phase_index, prompt_bytes, prompt_file_path,
+                "Phase %d prompt delivered via file: %s",
+                phase_index, prompt_file_path,
             )
-        else:
-            env[env_name] = prompt
-            args = self._build_args()
 
         command_str = " ".join(args)
         result.command_executed = command_str
@@ -221,40 +217,73 @@ class CliAgentBackend(ExecutionBackend):
         use_file: bool,
         phase_index: int,
     ) -> tuple[list[str], dict[str, str]]:
-        """Build invocation args using the adapter's native CLI pattern.
+        """Build invocation args for the detected agent CLI.
 
-        Replaces the adapter's default executable name (e.g. ``"agent"``)
-        with the actual detected path (e.g. ``agent.CMD``), and wraps
-        ``.cmd``/``.bat`` scripts through ``cmd.exe /c`` on Windows so
-        ``create_subprocess_exec`` can launch them.
+        Writes the prompt to a temp file and generates a launcher script
+        that reads it and calls the agent with the prompt as an argument.
+
+        On Windows, ``.CMD`` wrappers are bypassed by calling the
+        underlying ``.ps1`` script directly through PowerShell, avoiding
+        ``cmd.exe``'s 8191-char command-line limit.  PowerShell calls
+        Node.js via ``CreateProcess`` which supports ~32 KB.
         """
         assert self._adapter is not None
 
-        prompt_file: Path | None = None
-        if use_file:
-            prompt_file = self._write_prompt_file(prompt, phase_index)
-            logger.info(
-                "Phase %d prompt too large, using file: %s",
-                phase_index, prompt_file,
+        prompt_file = self._write_prompt_file(prompt, phase_index)
+        agent_cmd = self._agent_cmd or self._adapter.executable_names[0]
+
+        if _IS_WINDOWS:
+            inner_cmd = self._resolve_ps1_from_cmd(agent_cmd) or agent_cmd
+            script = (
+                f"$p = Get-Content -Raw '{prompt_file}'\n"
+                f"& '{inner_cmd}' chat $p\n"
+                f"exit $LASTEXITCODE\n"
             )
+            script_file = self._write_launcher(script, phase_index, ".ps1")
+            args = [
+                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", str(script_file),
+            ]
+        else:
+            script = (
+                f"#!/bin/bash\n"
+                f"p=$(cat '{prompt_file}')\n"
+                f"'{agent_cmd}' chat \"$p\"\n"
+            )
+            script_file = self._write_launcher(script, phase_index, ".sh")
+            script_file.chmod(0o755)
+            args = ["bash", str(script_file)]
 
-        invocation = self._adapter.build_invocation(
-            prompt,
-            working_directory=cwd,
-            timeout_seconds=self._config.timeout_seconds,
-            prompt_file=prompt_file,
-        )
-
-        args = list(invocation.args)
-
-        if args and self._agent_cmd and self._agent_cmd != args[0]:
-            args[0] = self._agent_cmd
-
-        if _IS_WINDOWS and args and args[0].lower().endswith((".cmd", ".bat")):
-            args = ["cmd.exe", "/c"] + args
-
-        env.update(invocation.env_overrides)
+        env[self._config.env_var_name] = prompt
         return args, env
+
+    @staticmethod
+    def _resolve_ps1_from_cmd(cmd_path: str) -> str | None:
+        """If *cmd_path* is a ``.CMD`` wrapper, find the ``.ps1`` it calls."""
+        p = Path(cmd_path)
+        if not p.suffix.lower() == ".cmd":
+            return None
+        ps1 = p.parent / f"{p.stem.replace('agent', 'cursor-agent')}.ps1"
+        if ps1.exists():
+            return str(ps1)
+        for candidate in p.parent.glob("*.ps1"):
+            return str(candidate)
+        return None
+
+    def _write_launcher(
+        self, content: str, phase_index: int, suffix: str,
+    ) -> Path:
+        temp_dir = self._config.temp_dir or tempfile.gettempdir()
+        fd, path_str = tempfile.mkstemp(
+            prefix=f"clawsmith_invoke_{phase_index}_",
+            suffix=suffix,
+            dir=temp_dir,
+        )
+        path = Path(path_str)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        self._temp_files.append(path)
+        return path
 
     def _build_env(self, overrides: dict[str, str] | None = None) -> dict[str, str]:
         env = os.environ.copy()
@@ -262,17 +291,6 @@ class CliAgentBackend(ExecutionBackend):
         if overrides:
             env.update(overrides)
         return env
-
-    def _build_args(self) -> list[str]:
-        env_ref = (
-            f"$env:{self._config.env_var_name}"
-            if _IS_WINDOWS
-            else f"${self._config.env_var_name}"
-        )
-        args = [self._agent_cmd, self._agent_sub, env_ref]
-        if _IS_WINDOWS and self._agent_cmd.lower().endswith((".cmd", ".bat")):
-            args = ["cmd.exe", "/c"] + args
-        return args
 
     def _build_file_args(self, prompt_file: Path) -> list[str]:
         if _IS_WINDOWS:

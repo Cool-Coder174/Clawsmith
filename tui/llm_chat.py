@@ -22,6 +22,8 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _MAX_TOOL_ROUNDS = 6
 
+_HEAVY_TOOLS = frozenset({"run_yolo", "run_task_pipeline", "run_build", "run_tests"})
+
 # ---------------------------------------------------------------------------
 # Lightweight conversational heuristic — keeps tools out of casual chat
 # ---------------------------------------------------------------------------
@@ -444,14 +446,17 @@ def _try_parse_content_tool_calls(
     except json.JSONDecodeError:
         return None
 
-    # Unwrap {"Tool Calls": [...]}, {"tool_calls": [...]}, or bare list
     calls_list: list[dict] | None = None
     if isinstance(data, dict):
+        # Envelope: {"Tool Calls": [...]}, {"tool_calls": [...]}, etc.
         for key in ("Tool Calls", "tool_calls", "toolCalls"):
             val = data.get(key)
             if isinstance(val, list):
                 calls_list = val
                 break
+        # Single tool-call object: {"id": ..., "function": {"name": ...}}
+        if calls_list is None and "function" in data:
+            calls_list = [data]
         if calls_list is None:
             return None
     elif isinstance(data, list):
@@ -528,11 +533,16 @@ class ChatBrain:
         serialised JSON in ``message.content`` instead of the structured
         ``tool_calls`` field.  When that happens we parse the payload and
         feed it into the same execution path so the tool actually runs.
+
+        Heavy tools (``run_yolo``, ``run_task_pipeline``) are only allowed
+        once per turn to stop local models from redundantly re-invoking
+        them in every tool-loop round.
         """
         self._messages.append({"role": "user", "content": user_message})
 
         use_tools = not _is_conversational(user_message)
         _valid = frozenset(_TOOL_DISPATCH)
+        executed_heavy: set[str] = set()
 
         for _ in range(_MAX_TOOL_ROUNDS):
             kwargs: dict[str, Any] = dict(
@@ -551,7 +561,6 @@ class ChatBrain:
 
             tool_calls = getattr(msg, "tool_calls", None)
 
-            # Fallback: detect tool calls serialised in plain-text content
             content_tool_calls: list[SimpleNamespace] | None = None
             if not tool_calls and use_tools and msg.content:
                 content_tool_calls = _try_parse_content_tool_calls(
@@ -570,7 +579,6 @@ class ChatBrain:
                 use_tools = False
                 continue
 
-            # Record the assistant turn in conversation history
             if tool_calls:
                 self._messages.append(msg.model_dump())
             else:
@@ -591,7 +599,17 @@ class ChatBrain:
                 })
 
             for tc in active_calls:
-                result = await self._execute_tool(tc)
+                name = tc.function.name
+                if name in _HEAVY_TOOLS and name in executed_heavy:
+                    result = (
+                        f"Tool '{name}' already executed this turn. "
+                        "Summarise the previous result for the user instead "
+                        "of calling the tool again."
+                    )
+                else:
+                    result = await self._execute_tool(tc)
+                    if name in _HEAVY_TOOLS:
+                        executed_heavy.add(name)
                 self._messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
