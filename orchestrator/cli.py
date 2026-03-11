@@ -159,6 +159,16 @@ def start_server() -> None:
     mcp_app.run(transport=cfg.mcp_server.transport)
 
 
+@cli.command("onboard")
+def onboard() -> None:
+    """Guided first-run setup: prerequisites, config, runtime directories."""
+    from orchestrator.onboard import run_onboard
+
+    ok = run_onboard()
+    if not ok:
+        sys.exit(1)
+
+
 @cli.command("doctor")
 def doctor() -> None:
     """Run preflight checks and report ClawSmith readiness."""
@@ -167,6 +177,44 @@ def doctor() -> None:
     ok = run_doctor()
     if not ok:
         sys.exit(1)
+
+
+@cli.command("smoke-test")
+def smoke_test() -> None:
+    """Run a quick integration check to verify the system is alive."""
+    from orchestrator.smoke import run_smoke_test
+
+    ok = run_smoke_test()
+    if not ok:
+        sys.exit(1)
+
+
+@cli.command("start")
+@click.option(
+    "--host", default=None, help="Bind address (default from config).",
+)
+@click.option(
+    "--port", default=None, type=int, help="Listen port (default from config).",
+)
+def start(host: str | None, port: int | None) -> None:
+    """Start ClawSmith (MCP server + health check)."""
+    from config.config_loader import get_config
+    from orchestrator.logging_setup import setup_logging
+
+    setup_logging()
+    cfg = get_config()
+    effective_host = host or cfg.mcp_server.host
+    effective_port = port or cfg.mcp_server.port
+
+    console.print(
+        f"[bold cyan]ClawSmith[/bold cyan] starting on "
+        f"{effective_host}:{effective_port} "
+        f"(transport={cfg.mcp_server.transport})"
+    )
+
+    from mcp_server.server import mcp as mcp_app
+
+    mcp_app.run(transport=cfg.mcp_server.transport)
 
 
 @cli.command("register-skill")

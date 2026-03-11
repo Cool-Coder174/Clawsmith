@@ -1,328 +1,192 @@
 # ClawSmith
 
-## What Is ClawSmith
+**Local-first AI orchestration that routes coding tasks to the cheapest capable model — local Ollama for simple work, cloud APIs only when needed.**
 
-ClawSmith is a **CLI-first orchestration and deployment layer for coding agents**. It audits a repository, classifies task complexity, auto-detects installed agent CLIs (Cursor, Claude Code, Gemini, OpenClaw), routes to the cheapest capable model tier, generates structured prompts, and executes work through controlled `.bat` job scripts. Every stage is exposed as an MCP tool for seamless editor integration.
-
-## Who It's For
-
-- **Solo developers** who want AI-assisted code tasks without sending all context to a premium API.
-- **Teams** wanting cost-controlled model routing — simple tasks stay local, complex tasks escalate to cloud.
-- **Agent CLI users** wanting a unified orchestration layer across Cursor, Claude Code, Gemini, and other coding agents.
-- **Open-source contributors** building on a modular, agent-agnostic orchestration base with swappable providers, adapters, and profiles.
+ClawSmith detects your hardware, recommends local LLMs, auto-detects installed agent CLIs (Cursor, Claude Code, Gemini, OpenClaw), and routes every task to the right model tier. Simple bug fixes stay on your machine. Complex refactors escalate to GPT-4o or Claude. Everything is exposed as an MCP server for seamless editor integration.
 
 ---
 
-## Quick Start
+## Install
+
+### Quick install
 
 ```bash
-# 1. Install (creates venv, installs deps, copies .env.example)
-git clone https://github.com/<your-org>/Clawsmith.git
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/Cool-Coder174/ClawSmith/main/install.sh | bash
+
+# Windows PowerShell
+irm https://raw.githubusercontent.com/Cool-Coder174/ClawSmith/main/install.ps1 | iex
+```
+
+### From source
+
+```bash
+git clone https://github.com/Cool-Coder174/ClawSmith.git
 cd Clawsmith
-scripts\windows\install.bat
-
-# 2. Verify your setup
-scripts\windows\doctor.bat
-
-# 3. Start the MCP server
-scripts\windows\run_mcp.bat
+pip install -e .
 ```
+
+### Prerequisites
+
+- **Python 3.11+**
+- **git**
+- **Ollama** *(optional)* — for local model inference ([ollama.com](https://ollama.com))
+- At least one **agent CLI** *(optional)* — Cursor, Claude Code, Gemini CLI, or OpenClaw
 
 ---
 
-## Project Structure
-
-```
-Clawsmith/
-├── config/                 # settings.yaml + agent profile YAMLs
-│   ├── agent_profiles/     # Bundled agent profiles (5 YAML files)
-│   ├── config_loader.py    # Loads settings, applies env overrides
-│   └── settings.yaml       # Central configuration
-├── docs/                   # Extended documentation
-├── jobs/                   # Job generation and execution
-│   ├── allowlist.py        # Command allowlist for safety
-│   ├── bat_generator.py    # Produces .bat scripts from a JobSpec
-│   ├── executor.py         # Runs .bat jobs with timeout + artifacts
-│   ├── examples/           # Sample JobSpec JSON files
-│   ├── generated/          # Output directory for rendered .bat files
-│   ├── profile_loader.py   # Loads YAML profiles → AgentProfile → JobSpec
-│   ├── schema_validator.py # Safety + correctness validation
-│   ├── template_renderer.py# Renders .bat.template files with variables
-│   └── templates/          # .bat.template files (5 bundled)
-├── mcp_server/             # MCP SSE server exposing all tools
-├── orchestrator/           # Pipeline, CLI, schemas, doctor
-│   ├── cli.py              # Click entry-points (run-task, audit, etc.)
-│   ├── doctor.py           # Preflight environment checker
-│   ├── pipeline.py         # End-to-end orchestration
-│   └── schemas.py          # Pydantic data models
-├── prompts/                # Prompt generation utilities
-├── providers/              # LiteLLM provider abstraction + OpenClaw adapter
-├── agents/                 # Generic agent CLI runtime
-│   ├── adapters/           # Concrete adapters (Cursor, Claude Code, Gemini, OpenClaw)
-│   ├── base.py             # Abstract adapter interface
-│   ├── capabilities.py     # Capability enum
-│   ├── detector.py         # Auto-detection subsystem
-│   ├── registry.py         # Central adapter registry
-│   └── router.py           # Agent CLI selection logic
-├── routing/                # Task classification + model routing
-│   ├── classifier.py       # Keyword-based complexity scoring
-│   └── router.py           # Maps classification → model tier
-├── scripts/windows/        # Windows .bat helper scripts
-├── tests/                  # pytest test suite
-├── tools/                  # Repo auditor, mapper, build detector, context packer
-├── .env.example            # Environment variable template
-├── pyproject.toml          # Project metadata + tool config
-└── README.md
-```
-
----
-
-## Example Commands
+## First Run
 
 ```bash
-# Install and verify
-scripts\windows\install.bat
-scripts\windows\doctor.bat
+clawsmith onboard       # guided setup: checks prereqs, creates config, sets up dirs
+clawsmith doctor        # verify full environment (HEALTHY / DEGRADED / BLOCKED)
+clawsmith smoke-test    # quick integration check across all subsystems
+```
 
-# Start the MCP server
-scripts\windows\run_mcp.bat
+---
 
-# Run the full orchestration pipeline
+## Usage
+
+```bash
+# Interactive chat session
+clawsmith chat
+
+# Run a coding task through the full pipeline
 clawsmith run-task --task "Fix the login bug in auth.py" --repo-path .
 
-# Dry-run (no provider call, no execution)
+# Dry-run (no API calls, no execution)
 clawsmith run-task --task "Refactor the database layer" --repo-path . --dry-run
+
+# Start the MCP server (for Cursor / editor integration)
+clawsmith start
+
+# Detect your hardware and recommend local models
+clawsmith detect
+clawsmith recommend
 
 # Audit a repository
 clawsmith audit --repo-path .
 
-# Execute a job from a JSON spec
-clawsmith run-job --job-file jobs/examples/sample_task.json
-
-# Run via Windows helper script (forwards all args to clawsmith run-task)
-scripts\windows\run_orchestrator.bat --task "Fix the login bug" --repo-path "."
-
-# Generate an OpenClaw SKILL.md registration artifact
-clawsmith register-skill
-
-# Detect installed agent CLIs and show capability matrix
+# Detect installed agent CLIs
 clawsmith detect-agents
-
-# Run a task with a specific agent CLI
-clawsmith run-task --task "Fix the login bug" --repo-path . --agent claude_code
-
-# Switch models: edit config/settings.yaml → models.premium.model_name
-# e.g. change from openai/gpt-4o to anthropic/claude-3-opus
 ```
+
+---
+
+## Why ClawSmith?
+
+Most AI coding tools send everything to expensive cloud APIs. ClawSmith keeps simple tasks local and only escalates when complexity demands it.
+
+| Feature | What it does |
+|---|---|
+| **Cost-aware routing** | Simple tasks → local Ollama. Complex tasks → GPT-4o / Claude. |
+| **Agent-agnostic** | Works with Cursor, Claude Code, Gemini CLI, or OpenClaw. |
+| **Local-first hardware detection** | Scans CPU, GPU, RAM; recommends and provisions models automatically. |
+| **MCP integration** | Exposes all tools over SSE for editor integration. |
+| **Guarded mutations** | Propose → stage → validate → approve → apply → rollback. |
+| **Cross-repo scope** | Manages multi-repository awareness with dependency graphs. |
+
+### Model routing
+
+```
+complexity < 0.35  →  local_router  (ollama/mistral — fast, free)
+0.35 ≤ complexity < 0.70  →  local_code  (ollama/codellama — code-focused)
+complexity ≥ 0.70  →  premium  (openai/gpt-4o — highest capability)
+```
+
+Ambiguity bumps the tier up. Critical severity overrides to premium.
 
 ---
 
 ## Architecture
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant CLI as orchestrator/cli.py
-    participant Pipeline as OrchestrationPipeline
-    participant Auditor as RepoAuditor
-    participant Classifier as TaskClassifier
-    participant Router as ModelRouter
-    participant Provider as ProviderRegistry
-    participant Executor as JobExecutor
-
-    User->>CLI: clawsmith run-task --task "..."
-    CLI->>Pipeline: run(task, repo_path)
-    Pipeline->>Auditor: audit()
-    Auditor-->>Pipeline: AuditReport
-    Pipeline->>Classifier: classify(task, context)
-    Classifier-->>Pipeline: TaskClassification
-    Pipeline->>Router: route_task(classification)
-    Router-->>Pipeline: RoutingDecision (tier + model)
-    Pipeline->>Provider: complete(prompt)
-    Provider-->>Pipeline: CompletionResult
-    Pipeline->>Executor: execute(JobSpec)
-    Executor-->>Pipeline: ExecutionResult
-    Pipeline-->>CLI: PipelineResult
-    CLI-->>User: Summary output
+```
+clawsmith run-task --task "..."
+    │
+    ├── RepoAuditor       → detect languages, frameworks, CI
+    ├── ContextPacker      → assemble token-budgeted context
+    ├── TaskClassifier     → score complexity, ambiguity, severity
+    ├── ModelRouter        → select model tier
+    ├── AgentRouter        → select best available agent CLI
+    ├── PromptGenerator    → build structured prompt
+    ├── Provider           → dispatch to LLM (local or cloud)
+    └── JobExecutor        → execute via agent CLI
 ```
 
-| Component | File | Responsibility |
-|---|---|---|
-| CLI | `orchestrator/cli.py` | Click entry-points (`run-task`, `audit`, `run-job`, `start-server`, `register-skill`, `detect-agents`) |
-| Pipeline | `orchestrator/pipeline.py` | End-to-end orchestration of all stages |
-| RepoAuditor | `tools/repo_auditor.py` | Detects languages, frameworks, CI, linters, markers |
-| RepoMapper | `tools/repo_mapper.py` | Builds a directory tree + detects entrypoints |
-| BuildDetector | `tools/build_detector.py` | Infers build/test/lint commands from config files |
-| ContextPacker | `tools/context_packer.py` | Assembles a token-budgeted context packet |
-| TaskClassifier | `routing/classifier.py` | Scores complexity, ambiguity, severity, architectural impact |
-| ModelRouter | `routing/router.py` | Maps classification to a model tier |
-| ProviderRegistry | `providers/registry.py` | Resolves tier → LiteLLM provider |
-| BatGenerator | `jobs/bat_generator.py` | Produces `.bat` scripts from a `JobSpec` |
-| JobSpecValidator | `jobs/schema_validator.py` | Safety + correctness checks before execution |
-| JobExecutor | `jobs/executor.py` | Runs `.bat` jobs with timeout and artifact capture |
-| MCP Server | `mcp_server/server.py` | Exposes all tools over SSE for editor integration |
-| Agent Registry | `agents/registry.py` | Manages CLI adapters, detection, and capability matrix |
-| Agent Router | `agents/router.py` | Selects best available agent CLI for a job |
-| Agent Detector | `agents/detector.py` | Auto-detects installed agent CLIs on the local machine |
-
----
-
-## Prerequisites
-
-- **Python 3.11+**
-- **git**
-- **Ollama** (optional, for local model tiers — `ollama/mistral`, `ollama/codellama`)
-- **Cursor CLI** (optional, for editor integration)
-
----
-
-## Environment Variables
-
-All variables are defined in `.env.example`. Copy it to `.env` and fill in the relevant keys.
-
-| Variable | Purpose | Default |
-|---|---|---|
-| `OPENAI_API_KEY` | OpenAI API key for premium / prompt polisher tiers | _(empty)_ |
-| `ANTHROPIC_API_KEY` | Anthropic API key (alternative provider) | _(empty)_ |
-| `OPENROUTER_API_KEY` | OpenRouter API key (alternative provider) | _(empty)_ |
-| `CURSOR_CLI_PATH` | Absolute path to the Cursor CLI executable | auto-detect |
-| `CLAWSMITH_CONFIG_PATH` | Path to a custom `settings.yaml` | `config/settings.yaml` |
-| `LOG_LEVEL` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | `INFO` |
-| `CLAWSMITH_MCP_SERVER__PORT` | Override MCP server port | `8765` |
-| `OPENCLAW_WEBHOOK_SECRET` | HMAC secret for OpenClaw webhook auth (future) | _(empty)_ |
-
-Config overrides use `CLAWSMITH_<SECTION>__<KEY>` with double-underscore nesting:
-
-```
-CLAWSMITH_ROUTING__LOW_COMPLEXITY_THRESHOLD=0.5
-CLAWSMITH_MODELS__PREMIUM__MAX_TOKENS=16384
-CLAWSMITH_EXECUTION__ALLOWED_COMMANDS=["cursor","python","git"]
-```
+Full docs: [docs/architecture.md](docs/architecture.md)
 
 ---
 
 ## Configuration
 
-`config/settings.yaml` is the central configuration file with these sections:
+Edit `config/settings.yaml` to change model tiers, routing thresholds, execution settings, and MCP server config.
 
-| Section | Purpose |
+Environment variables override any config value using `CLAWSMITH_<SECTION>__<KEY>`:
+
+```bash
+CLAWSMITH_ROUTING__LOW_COMPLEXITY_THRESHOLD=0.5
+CLAWSMITH_MODELS__PREMIUM__MAX_TOKENS=16384
+```
+
+API keys go in `.env` (created during onboarding):
+
+```bash
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+---
+
+## Develop from Source
+
+```bash
+git clone https://github.com/Cool-Coder174/ClawSmith.git
+cd Clawsmith
+pip install -e ".[dev]"
+
+# Run tests
+pytest tests/ -v
+
+# Lint
+ruff check . --fix
+ruff format .
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for full contributor guidelines.
+
+---
+
+## Troubleshooting
+
+```bash
+clawsmith doctor    # diagnoses all issues with PASS / WARN / FAIL
+```
+
+The doctor output is designed for copy-paste into GitHub issues. See [docs/troubleshooting.md](docs/troubleshooting.md) for common solutions.
+
+---
+
+## All CLI Commands
+
+| Command | Purpose |
 |---|---|
-| `models` | Defines four model tiers: `local_router`, `local_code`, `premium`, `prompt_polisher`. Each has `provider`, `model_name`, `max_tokens`, `temperature`, and optional cost fields. |
-| `routing` | Thresholds for the model router: `low_complexity_threshold` (below = local_router), `high_complexity_threshold` (above = premium), `ambiguity_bump_threshold`. |
-| `execution` | `default_timeout`, `max_retries`, `artifacts_dir`, `logs_dir`, and `allowed_commands` allowlist. |
-| `mcp_server` | `host`, `port`, `transport` for the MCP SSE server. |
-| `openclaw` | `skill_name`, `mcp_endpoint`, `webhook_secret` for OpenClaw integration. |
-
----
-
-## Model Routing
-
-The router maps task complexity to one of three execution tiers:
-
-```
-complexity < 0.35  ──►  local_router  (ollama/mistral — fast, cheap)
-0.35 ≤ complexity < 0.70  ──►  local_code  (ollama/codellama — code-focused)
-complexity ≥ 0.70  ──►  premium  (openai/gpt-4o — highest capability)
-```
-
-Additional rules:
-- **Ambiguity bump**: If `ambiguity_score > ambiguity_bump_threshold`, the tier is bumped up one level.
-- **Severity override**: If `failure_severity > 0.8`, the tier is overridden to `premium` regardless of complexity.
-- **Confidence**: `confidence_score = 1.0 - ambiguity_score`.
-
----
-
-## Running the Orchestrator
-
-### Full pipeline
-
-```bash
-clawsmith run-task --task "Fix the login bug in auth.py" --repo-path .
-clawsmith run-task --task "Refactor the database layer" --repo-path . --dry-run
-```
-
-### Audit a repository
-
-```bash
-clawsmith audit --repo-path .
-```
-
-### Execute a job from a JSON spec
-
-```bash
-clawsmith run-job --job-file jobs/examples/sample_task.json
-```
-
-Or via the Windows scripts:
-
-```bash
-scripts\windows\run_orchestrator.bat --task "Fix the login bug" --repo-path "."
-```
-
----
-
-## MCP Server
-
-The MCP server exposes all ClawSmith tools over SSE so editors like Cursor can invoke them.
-
-### Start
-
-```bash
-scripts\windows\run_mcp.bat
-# or
-clawsmith start-server
-```
-
-The server listens on `127.0.0.1:8765` by default (configurable in `settings.yaml` or via `CLAWSMITH_MCP_SERVER__PORT`).
-
-### Exposed tools
-
-All tools registered in `mcp_server/server.py` — including audit, classify, route, generate prompt, execute job, and more.
-
-### Connect from Cursor
-
-Add the SSE endpoint (`http://127.0.0.1:8765/sse`) in Cursor's MCP settings.
-
----
-
-## `.bat` Job System
-
-Jobs flow through a controlled pipeline:
-
-1. A `JobSpec` (Pydantic model) is created describing the task, commands, timeout, and working directory.
-2. `JobSpecValidator` checks safety: command allowlist, shell metacharacter rejection, path traversal prevention, timeout bounds.
-3. `BatGenerator` produces a `.bat` script with build commands, test commands, timeout checking, and log redirection.
-4. `JobExecutor` runs the `.bat` file, captures stdout/stderr to `artifacts/<job_id>/`, and returns an `ExecutionResult`.
-
-Generated scripts and metadata live in `jobs/generated/` and `artifacts/<job_id>/`.
-
----
-
-## Switching Providers / Models
-
-Edit the `models` section in `config/settings.yaml`. Model names use [LiteLLM](https://docs.litellm.ai/) format:
-
-```yaml
-models:
-  premium:
-    provider: anthropic
-    model_name: anthropic/claude-3-opus
-    max_tokens: 8192
-    temperature: 0.2
-```
-
-Supported providers include `ollama`, `openai`, `anthropic`, `openrouter`, and any LiteLLM-compatible provider.
-
----
-
-## OpenClaw Integration
-
-ClawSmith can register itself as an **OpenClaw skill**. See [docs/openclaw_integration.md](docs/openclaw_integration.md) for the full setup guide, including:
-
-- Running `clawsmith register-skill` to generate `SKILL.md`
-- Required environment variables
-- `config/openclaw_skill.yaml` format
-- Webhook integration roadmap
+| `clawsmith onboard` | Guided first-run setup |
+| `clawsmith doctor` | Preflight environment check |
+| `clawsmith smoke-test` | Quick integration verification |
+| `clawsmith start` | Start the MCP server |
+| `clawsmith chat` | Interactive agentic TUI session |
+| `clawsmith run-task` | Run the full orchestration pipeline |
+| `clawsmith audit` | Audit a repository |
+| `clawsmith detect` | Detect hardware and toolchain |
+| `clawsmith recommend` | Recommend local LLMs |
+| `clawsmith install-model` | Install a local LLM |
+| `clawsmith detect-agents` | Show agent CLI capability matrix |
+| `clawsmith register-skill` | Generate OpenClaw SKILL.md |
+| `clawsmith memory sync` | Sync persistent memory |
+| `clawsmith link-repo` | Add repo to workspace graph |
+| `clawsmith scope` | View/create scope contracts |
+| `clawsmith mutate propose` | Propose a configuration mutation |
+| `clawsmith rollback` | Roll back an applied mutation |
 
 ---
 
@@ -332,15 +196,11 @@ ClawSmith can register itself as an **OpenClaw skill**. See [docs/openclaw_integ
 - [Contributing](CONTRIBUTING.md)
 - [Architecture](docs/architecture.md)
 - [Agent Profiles](docs/agent_profiles.md)
-- [`.bat` Templates](docs/bat_templates.md)
-- [Troubleshooting](docs/troubleshooting.md)
 - [OpenClaw Integration](docs/openclaw_integration.md)
+- [Troubleshooting](docs/troubleshooting.md)
 
 ---
 
-## Known Limitations
+## License
 
-- **Cursor CLI integration** requires manual path configuration (`CURSOR_CLI_PATH` env var) if Cursor is not on `PATH`.
-- **Local models** require Ollama running separately (`ollama serve`).
-- **Windows-only `.bat` execution** — the job system generates Windows batch scripts. Cross-platform shell support is planned.
-- **No live OpenClaw credentials** are available in the development environment; the adapter is implemented but the webhook receiver is not yet wired to an HTTP server.
+See [LICENSE](LICENSE).

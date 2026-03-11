@@ -1,9 +1,20 @@
 [project]
 name = "clawsmith"
 version = "0.1.0"
-description = "AI-powered code orchestration pipeline with intelligent model routing"
+description = "Local-first AI orchestration — routes coding tasks to the cheapest capable model."
+readme = "README.md"
 requires-python = ">=3.11"
 license = {file = "LICENSE"}
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+]
 dependencies = [
     "mcp[cli]>=1.7.0",
     "fastmcp>=2.0.0",
@@ -29,8 +40,8 @@ dev = [
 clawsmith = "orchestrator.cli:cli"
 
 [build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.backends.legacy:build"
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]

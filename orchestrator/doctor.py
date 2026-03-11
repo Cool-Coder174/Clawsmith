@@ -40,6 +40,7 @@ class DoctorChecker:
         self._check_python_version()
         self._check_pip()
         self._check_git()
+        self._check_ollama()
         self._check_cursor_cli()
         self._check_agent_clis()
         self._check_env_file()
@@ -57,24 +58,27 @@ class DoctorChecker:
 
         self._console.print(self._table)
         self._console.print(
-            f"\n{self._passes} checks passed, {self._warnings} warnings, "
+            f"\n{self._passes} passed, "
+            f"{self._warnings} warnings, "
             f"{self._failures} failures"
         )
 
         if self._failures:
-            self._console.print(
-                "\n[bold red]Doctor found critical issues. "
-                "Fix failures before running ClawSmith.[/bold red]"
-            )
+            status = "[bold red]BLOCKED[/bold red]"
+            hint = "Fix failures before running ClawSmith."
         elif self._warnings:
-            self._console.print(
-                "\n[bold yellow]Doctor found warnings. "
-                "ClawSmith may work but review the above.[/bold yellow]"
-            )
+            status = "[bold yellow]DEGRADED[/bold yellow]"
+            hint = "ClawSmith will work but review warnings above."
         else:
-            self._console.print(
-                "\n[bold green]All checks passed. ClawSmith is ready.[/bold green]"
-            )
+            status = "[bold green]HEALTHY[/bold green]"
+            hint = "ClawSmith is ready."
+
+        self._console.print(f"\nHealth: {status}  {hint}")
+
+        self._console.print(
+            "\n[dim]Paste this output into a GitHub issue "
+            "if you need help.[/dim]"
+        )
 
         return self._failures == 0
 
@@ -116,6 +120,16 @@ class DoctorChecker:
             self._pass(name)
         else:
             self._warn(name, "git not found on PATH")
+
+    def _check_ollama(self) -> None:
+        name = "Ollama runtime"
+        if shutil.which("ollama"):
+            self._pass(name, "found on PATH")
+        else:
+            self._warn(
+                name,
+                "Not found — install from https://ollama.com for local models",
+            )
 
     def _check_cursor_cli(self) -> None:
         name = "Cursor CLI (legacy check)"
