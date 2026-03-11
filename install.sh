@@ -78,12 +78,42 @@ else
     fail "Neither pipx nor pip found. Install one of them first."
 fi
 
-# Verify
-if command -v clawsmith &>/dev/null; then
-    ok "clawsmith CLI is on PATH"
+# Ensure the scripts directory is on PATH
+if ! command -v clawsmith &>/dev/null; then
+    SCRIPTS_DIR=$("$PYTHON" -c "import sysconfig; print(sysconfig.get_path('scripts', 'posix_user'))" 2>/dev/null)
+    if [ -z "$SCRIPTS_DIR" ]; then
+        USER_BASE=$("$PYTHON" -m site --user-base 2>/dev/null)
+        [ -n "$USER_BASE" ] && SCRIPTS_DIR="$USER_BASE/bin"
+    fi
+
+    if [ -n "$SCRIPTS_DIR" ] && [ -x "$SCRIPTS_DIR/clawsmith" ]; then
+        export PATH="$PATH:$SCRIPTS_DIR"
+
+        SHELL_NAME=$(basename "$SHELL" 2>/dev/null)
+        case "$SHELL_NAME" in
+            zsh)  RC_FILE="$HOME/.zshrc" ;;
+            bash) RC_FILE="$HOME/.bashrc" ;;
+            fish) RC_FILE="$HOME/.config/fish/config.fish" ;;
+            *)    RC_FILE="" ;;
+        esac
+
+        if [ -n "$RC_FILE" ]; then
+            if ! grep -qF "$SCRIPTS_DIR" "$RC_FILE" 2>/dev/null; then
+                info "Adding $SCRIPTS_DIR to PATH in $RC_FILE"
+                if [ "$SHELL_NAME" = "fish" ]; then
+                    echo "fish_add_path $SCRIPTS_DIR" >> "$RC_FILE"
+                else
+                    echo "export PATH=\"\$PATH:$SCRIPTS_DIR\"" >> "$RC_FILE"
+                fi
+            fi
+        fi
+        ok "clawsmith CLI added to PATH"
+    else
+        warn "clawsmith is installed but could not locate the scripts directory."
+        warn "You may need to add ~/.local/bin to your PATH."
+    fi
 else
-    warn "clawsmith is installed but not on PATH."
-    warn "You may need to add ~/.local/bin to your PATH."
+    ok "clawsmith CLI is on PATH"
 fi
 
 echo ""

@@ -62,11 +62,28 @@ Write-Info "Installing ClawSmith..."
 if ($LASTEXITCODE -ne 0) { Write-Fail "pip install failed" }
 Write-Ok "Installed via pip"
 
-# Verify
-if (Get-Command clawsmith -ErrorAction SilentlyContinue) {
-    Write-Ok "clawsmith CLI is on PATH"
+# Ensure the Scripts directory is on PATH
+if (-not (Get-Command clawsmith -ErrorAction SilentlyContinue)) {
+    $ScriptsDir = & $PythonCmd -c "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user'))" 2>$null
+    if (-not $ScriptsDir) {
+        $UserBase = & $PythonCmd -m site --user-base 2>$null
+        if ($UserBase) { $ScriptsDir = Join-Path $UserBase "Scripts" }
+    }
+
+    if ($ScriptsDir -and (Test-Path (Join-Path $ScriptsDir "clawsmith.exe"))) {
+        $CurrentUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+        if ($CurrentUserPath -notlike "*$ScriptsDir*") {
+            Write-Info "Adding $ScriptsDir to user PATH..."
+            [Environment]::SetEnvironmentVariable("Path", "$CurrentUserPath;$ScriptsDir", "User")
+        }
+        $env:PATH = "$env:PATH;$ScriptsDir"
+        Write-Ok "clawsmith CLI added to PATH"
+    } else {
+        Write-Warn "clawsmith installed but could not locate the Scripts directory."
+        Write-Warn "You may need to manually add the Python Scripts directory to your PATH."
+    }
 } else {
-    Write-Warn "clawsmith installed but not on PATH. Restart your terminal or add the Scripts directory to PATH."
+    Write-Ok "clawsmith CLI is on PATH"
 }
 
 Write-Host ""

@@ -37,7 +37,21 @@ if not exist "%REPO_ROOT%\logs"           mkdir "%REPO_ROOT%\logs"
 if not exist "%REPO_ROOT%\artifacts"      mkdir "%REPO_ROOT%\artifacts"
 if not exist "%REPO_ROOT%\jobs\generated" mkdir "%REPO_ROOT%\jobs\generated"
 
-:: 8. Success
+:: 8. Ensure clawsmith is reachable
+where clawsmith >nul 2>&1
+if errorlevel 1 (
+    echo [install] Adding venv Scripts to PATH for this session...
+    set "PATH=%PATH%;%REPO_ROOT%\venv\Scripts"
+)
+where clawsmith >nul 2>&1
+if errorlevel 1 (
+    echo [install] WARNING: clawsmith not found on PATH after install.
+    echo [install] Make sure to activate the venv: %REPO_ROOT%\venv\Scripts\activate.bat
+) else (
+    echo [install] clawsmith CLI is available.
+)
+
+:: 9. Success
 echo.
 echo [ClawSmith] Installation complete!
 echo.
