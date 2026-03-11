@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from rich.console import Console
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
 from tui.commands import CommandRouter
 from tui.models import ChatMessage, MessageRole, ThoughtPhase
@@ -230,23 +231,46 @@ class ChatSession:
         """Check dependencies at startup and guide the user through repairs."""
         import threading
         from orchestrator.preflight import (
-            PreflightResult, run_preflight, try_start_ollama,
+            PREFLIGHT_STEP_COUNT, PreflightResult, run_preflight,
+            try_start_ollama,
         )
-
-        self.console.print("  [bold]Checking dependencies...[/bold]")
-        self.console.print()
 
         result_box: list[PreflightResult | None] = [None]
 
-        def _check() -> None:
-            try:
-                result_box[0] = run_preflight()
-            except Exception:
-                pass
+        progress = Progress(
+            "  ",
+            SpinnerColumn(style="cyan"),
+            TextColumn("[bold]{task.description}[/bold]"),
+            BarColumn(
+                bar_width=30,
+                complete_style="green",
+                finished_style="green",
+            ),
+            TextColumn("[dim]{task.completed}/{task.total}[/dim]"),
+            console=self.console,
+            transient=True,
+        )
 
-        check_thread = threading.Thread(target=_check, daemon=True)
-        check_thread.start()
-        check_thread.join(timeout=10)
+        with progress:
+            task_id = progress.add_task(
+                "Checking dependencies...", total=PREFLIGHT_STEP_COUNT,
+            )
+
+            def _on_step(completed: int, description: str) -> None:
+                progress.update(
+                    task_id, completed=completed,
+                    description=description,
+                )
+
+            def _check() -> None:
+                try:
+                    result_box[0] = run_preflight(on_step=_on_step)
+                except Exception:
+                    pass
+
+            check_thread = threading.Thread(target=_check, daemon=True)
+            check_thread.start()
+            check_thread.join(timeout=10)
 
         if check_thread.is_alive() or result_box[0] is None:
             self.console.print(

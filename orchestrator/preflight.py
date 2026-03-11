@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -150,14 +151,32 @@ def _ollama_install_hint() -> str:
 # ---------------------------------------------------------------------------
 
 
-def run_preflight() -> PreflightResult:
-    """Execute all startup checks. Designed to complete in <3 seconds."""
+PREFLIGHT_STEP_COUNT = 6
+
+
+def run_preflight(
+    on_step: Callable[[int, str], None] | None = None,
+) -> PreflightResult:
+    """Execute all startup checks. Designed to complete in <3 seconds.
+
+    *on_step(completed, description)* is called after each check finishes so
+    callers can drive a progress bar.
+    """
+    _n = 0
+
+    def _tick(desc: str) -> None:
+        nonlocal _n
+        _n += 1
+        if on_step is not None:
+            on_step(_n, desc)
+
     try:
         from dotenv import load_dotenv
 
         load_dotenv(_REPO_ROOT / ".env")
     except Exception:
         pass
+    _tick("Environment loaded")
 
     result = PreflightResult()
 
@@ -172,6 +191,7 @@ def run_preflight() -> PreflightResult:
                 repair_hint="Run: clawsmith onboard",
             )
         )
+    _tick("Config validated")
 
     # --- Ollama -------------------------------------------------------
     result.ollama_installed = _ollama_installed()
@@ -179,11 +199,6 @@ def run_preflight() -> PreflightResult:
         result.ollama_reachable = _ollama_reachable()
         if result.ollama_reachable:
             result.available_tiers.extend(["local_router", "local_code"])
-            available_models = _ollama_list_models()
-            required = _required_ollama_models()
-            result.models_missing = [
-                m for m in required if m not in available_models
-            ]
         else:
             result.issues.append(
                 PreflightIssue(
@@ -208,6 +223,16 @@ def run_preflight() -> PreflightResult:
                 ),
             )
         )
+    _tick("Ollama checked")
+
+    # --- Ollama models ------------------------------------------------
+    if result.ollama_reachable:
+        available_models = _ollama_list_models()
+        required = _required_ollama_models()
+        result.models_missing = [
+            m for m in required if m not in available_models
+        ]
+    _tick("Local models scanned")
 
     # --- API keys -----------------------------------------------------
     keys = _api_keys_present()
@@ -227,6 +252,7 @@ def run_preflight() -> PreflightResult:
                 ),
             )
         )
+    _tick("API keys checked")
 
     # --- MCP server ---------------------------------------------------
     if _mcp_reachable(timeout=0.3):
@@ -243,6 +269,7 @@ def run_preflight() -> PreflightResult:
                     repair_hint="Run manually: clawsmith start",
                 )
             )
+    _tick("MCP server ready")
 
     return result
 
