@@ -16,7 +16,7 @@ from tui.thinking import ThoughtStream
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # ---------------------------------------------------------------------------
-# Simple keyword-based intent routing (no LLM needed)
+# Subsystem keyword routing
 # ---------------------------------------------------------------------------
 
 _INTENT_KEYWORDS: dict[str, list[str]] = {
@@ -47,13 +47,110 @@ _INTENT_KEYWORDS: dict[str, list[str]] = {
     ],
 }
 
+# ---------------------------------------------------------------------------
+# Heuristics for smart intent classification
+# ---------------------------------------------------------------------------
+
+_GREETING_WORDS = frozenset({
+    "hello", "hi", "hey", "howdy", "yo", "sup", "greetings",
+    "hola", "hiya", "heya",
+})
+
+_THANKS_WORDS = frozenset({
+    "thanks", "thank", "thx", "cheers", "ty",
+})
+
+_CAPABILITY_PHRASES = (
+    "what can you", "what do you do", "how can you help",
+    "what are you", "who are you", "how do you work",
+    "what are your", "tell me about yourself",
+    "where do i start", "getting started",
+    "how does this work", "how does clawsmith",
+    "what is clawsmith", "what's clawsmith",
+)
+
+_TASK_VERBS = frozenset({
+    "fix", "add", "create", "implement", "refactor", "build",
+    "test", "run", "update", "remove", "delete", "write", "change",
+    "modify", "move", "rename", "deploy", "debug", "optimize",
+    "migrate", "configure", "setup", "generate", "scaffold",
+    "lint", "format", "document", "integrate",
+    "convert", "upgrade", "downgrade", "patch", "revert",
+    "rewrite", "restructure", "analyze", "profile", "benchmark",
+    "check", "verify", "validate", "inspect", "scan",
+})
+
+_CODE_CONTEXT = frozenset({
+    "function", "class", "method", "module", "component",
+    "endpoint", "api", "database", "schema", "migration",
+    "bug", "error", "exception", "crash", "file", "folder",
+    "directory", "package", "library", "dependency",
+    "dockerfile", "pipeline", "workflow", "server", "client",
+    "route", "handler", "middleware", "controller", "service",
+    "view", "template", "config", "spec", "test", "tests",
+    "repo", "repository", "codebase", "code",
+    "import", "export", "variable", "constant",
+    "performance", "latency",
+})
+
+_FILE_EXTENSIONS = frozenset({
+    ".py", ".js", ".ts", ".jsx", ".tsx", ".rs", ".go",
+    ".java", ".cpp", ".c", ".h", ".css", ".html", ".scss",
+    ".yaml", ".yml", ".json", ".toml", ".xml", ".sql",
+    ".sh", ".bat", ".ps1", ".cfg", ".ini",
+})
+
+
+def _is_conversational(q: str) -> bool:
+    """Return True if *q* looks like a greeting, thanks, or meta-question."""
+    words = q.split()
+    if not words:
+        return True
+    first = words[0].rstrip("!.,?;:")
+    if first in _GREETING_WORDS:
+        return True
+    if first in _THANKS_WORDS or any(
+        w.rstrip("!.,?;:") in _THANKS_WORDS for w in words
+    ):
+        return True
+    return any(p in q for p in _CAPABILITY_PHRASES)
+
+
+def _looks_like_task(q: str) -> bool:
+    """Return True if *q* contains indicators of a coding task."""
+    words = {w.rstrip("!.,?;:").lower() for w in q.split()}
+    if words & _TASK_VERBS:
+        return True
+    if words & _CODE_CONTEXT:
+        return True
+    tokens = q.split()
+    if any(
+        any(tok.endswith(ext) for ext in _FILE_EXTENSIONS)
+        for tok in tokens
+    ):
+        return True
+    return any("/" in tok or "\\" in tok for tok in tokens)
+
 
 def _detect_intent(query: str) -> str:
-    """Return the best-matching intent key, or 'task' as fallback."""
+    """Classify the query as a subsystem intent, conversation, or task."""
     q = query.lower().strip()
+
     for intent, keywords in _INTENT_KEYWORDS.items():
         if any(kw in q for kw in keywords):
             return intent
+
+    if _is_conversational(q):
+        return "conversation"
+
+    if _looks_like_task(q):
+        return "task"
+
+    # Short ambiguous queries default to conversation rather than
+    # burning 60s on a full pipeline run.
+    if len(q.split()) <= 6:
+        return "conversation"
+
     return "task"
 
 
@@ -438,10 +535,99 @@ def _handle_scope(
     return "\n".join(lines), []
 
 
+# -----------------------------------------------------------------------
+# Conversation handler — responds instantly without the heavy pipeline
+# -----------------------------------------------------------------------
+
+_RESPONSE_GREETING = (
+    "Hello! I'm **ClawSmith**, your local-first AI orchestration "
+    "assistant. Type **/help** for available commands, or describe "
+    "a coding task and I'll route it through the pipeline.\n\n"
+    "Try something like:\n"
+    "- \"Fix the bug in auth.py\"\n"
+    "- \"Add unit tests for the API module\"\n"
+    "- Or use **/detect** to scan your hardware"
+)
+
+_RESPONSE_CAPABILITIES = (
+    "Here's what I can do:\n\n"
+    "**Slash commands** (type /help for the full list):\n"
+    "- **/detect** — scan your hardware and AI tooling\n"
+    "- **/recommend** — get local model recommendations\n"
+    "- **/agents** — see detected agent CLIs\n"
+    "- **/doctor** — run environment health checks\n"
+    "- **/memory** — view persistent architecture memory\n"
+    "- **/scope** — manage cross-repo scope contracts\n\n"
+    "**Task execution** — describe a coding task in natural language:\n"
+    "1. I'll audit your repository structure\n"
+    "2. Classify the task complexity\n"
+    "3. Route to the right model tier (local or cloud)\n"
+    "4. Generate an optimized prompt\n"
+    "5. Execute via your preferred agent CLI "
+    "(Cursor, Claude, Gemini)\n\n"
+    "**Examples:**\n"
+    "- \"Fix the authentication bug in login.py\"\n"
+    "- \"Add dark mode support to the settings page\"\n"
+    "- \"Refactor the database layer to use async\"\n"
+    "- \"Run tests and fix any failures\""
+)
+
+_RESPONSE_THANKS = (
+    "You're welcome! Let me know if there's anything else "
+    "I can help with."
+)
+
+_RESPONSE_GUIDANCE = (
+    "I'm not sure what you'd like me to do. Try one of these:\n\n"
+    "- **Describe a coding task**: \"Fix the bug in auth.py\"\n"
+    "- **Use a slash command**: **/help**, **/detect**, "
+    "**/recommend**\n"
+    "- **Ask about capabilities**: \"What can you do?\""
+)
+
+
+def _handle_conversation(
+    session: ChatSession, query: str,
+) -> tuple[str, list]:
+    """Handle greetings, capability questions, and other non-task input."""
+    q = query.lower().strip()
+    words = q.split()
+    if not words:
+        return _RESPONSE_GUIDANCE, []
+
+    first = words[0].rstrip("!.,?;:")
+
+    # Greeting that might be followed by a real task:
+    # "hi, fix the bug in auth.py" → delegate to the pipeline.
+    if first in _GREETING_WORDS:
+        rest = " ".join(words[1:]).lstrip("!.,?;: ")
+        if rest and _looks_like_task(rest):
+            return _handle_task(session, query)
+
+    # Capability / meta questions (also covers "hello, what can you do?")
+    if any(p in q for p in _CAPABILITY_PHRASES):
+        return _RESPONSE_CAPABILITIES, []
+
+    # Pure greeting
+    if first in _GREETING_WORDS or any(
+        q.startswith(p)
+        for p in ("good morning", "good afternoon", "good evening")
+    ):
+        return _RESPONSE_GREETING, []
+
+    # Thanks / acknowledgement
+    if first in _THANKS_WORDS or any(
+        w.rstrip("!.,?;:") in _THANKS_WORDS for w in words
+    ):
+        return _RESPONSE_THANKS, []
+
+    return _RESPONSE_GUIDANCE, []
+
+
 def _handle_task(
     session: ChatSession, query: str,
 ) -> tuple[str, list]:
-    """Fallback: run the full orchestration pipeline."""
+    """Run the full orchestration pipeline for a genuine coding task."""
     from orchestrator.pipeline import OrchestrationPipeline
 
     events = []
@@ -516,5 +702,6 @@ _INTENT_HANDLERS: dict[str, object] = {
     "install": _handle_install,
     "link": _handle_link,
     "scope": _handle_scope,
+    "conversation": _handle_conversation,
     "task": _handle_task,
 }

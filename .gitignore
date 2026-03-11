@@ -1,18 +1,56 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
-.env
+*.egg-info/
+dist/
+build/
+*.whl
+*.tar.gz
+pip-wheel-metadata/
+
+# Virtual environments
 venv/
 .venv/
+
+# Linting / type checking / testing
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# ClawSmith runtime output
 artifacts/*
 !artifacts/.gitkeep
 logs/*
 !logs/.gitkeep
 jobs/generated/
-*.egg-info/
-dist/
-build/
-.mypy_cache/
-.ruff_cache/
-.pytest_cache/
 *.log
+
+# Generated machine profiles, memory, and architecture files
+clawsmith/
+.clawsmith/
+memory/
+MEMORY.md
+
+# Environment / secrets
+.env
+
+# IDE / editor
+.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+*.bak
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Node (if any tooling is added)
+node_modules/
