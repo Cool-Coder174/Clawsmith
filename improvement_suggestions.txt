@@ -1,0 +1,158 @@
+ClawSmith — Repository Improvement Suggestions
+================================================
+Generated: 2026-03-11
+Source: Full codebase audit of C:\Users\isaac\Documents\Github\Clawsmith\
+
+Overview
+--------
+ClawSmith is well-structured with clear module boundaries, Pydantic models
+throughout, ruff/mypy configured, and a solid test suite. The suggestions
+below focus on gaps that would harden the project for contributors and
+production use.
+
+
+1. CI / CD Pipeline (HIGH PRIORITY)
+------------------------------------
+There is no .github/workflows/ at the repo root. The only CI YAML lives
+inside tests/fixtures/sample_repo/ (a test fixture, not real CI).
+
+Suggested workflow:
+  - Lint:   ruff check . && ruff format --check .
+  - Types:  mypy orchestrator/ mcp_server/ agents/ routing/ tools/
+  - Tests:  pytest tests/ -v --tb=short
+  - Matrix: Python 3.11, 3.12, 3.13 on ubuntu-latest and windows-latest
+  - Badge:  Add status badge to README.md
+
+This alone would catch regressions before merge and signal project health
+to contributors.
+
+
+2. Cross-Platform Job Execution (HIGH PRIORITY)
+-------------------------------------------------
+JobExecutor, bat_generator, and all job templates are Windows-only (.bat,
+cmd.exe /c). This blocks macOS/Linux users entirely for the job subsystem.
+
+Suggested fix:
+  - Abstract a ShellRunner that picks cmd.exe on Windows, /bin/sh on Unix.
+  - Add .sh.template equivalents for every .bat.template.
+  - bat_generator.py -> script_generator.py with platform dispatch.
+
+
+3. Split cli.py (~860 lines) (MEDIUM)
+--------------------------------------
+orchestrator/cli.py holds every Click command in one file. As commands grow,
+this becomes unwieldy.
+
+Suggested structure:
+  orchestrator/
+    cli/
+      __init__.py        # main group, shared options
+      core.py            # run-task, audit, start, doctor, onboard, smoke-test
+      chat.py            # chat
+      memory.py          # memory sync/read/write
+      mutation.py        # mutate propose, rollback
+      update.py          # update
+
+
+4. Duplicate OpenClaw Adapter Naming (MEDIUM)
+----------------------------------------------
+Two files named openclaw_adapter.py:
+  - agents/adapters/openclaw_adapter.py  (AgentAdapter subclass)
+  - providers/openclaw_adapter.py        (OpenClaw gateway provider)
+
+The overlap causes confusion. Consider renaming:
+  - providers/openclaw_adapter.py  ->  providers/openclaw_gateway.py
+  - Or consolidate the gateway logic into the agent adapter.
+
+
+5. Enable mypy strict Mode (MEDIUM)
+-------------------------------------
+pyproject.toml has strict = false. The codebase already uses type hints
+extensively, so strict mode is within reach.
+
+Steps:
+  - Set strict = true
+  - Fix revealed issues (likely ~20-50 lines)
+  - Add mypy to CI
+
+
+6. Docstring Coverage (MEDIUM)
+-------------------------------
+Core modules (base.py, registry.py, pipeline.py) have docstrings, but many
+helper functions and adapters do not. A consistent standard would help
+contributors understand intent without reading implementation.
+
+Suggested: Require Google-style docstrings on all public functions and
+classes. Enforce with ruff rule D (pydocstyle).
+
+
+7. Pre-Commit Hooks (LOW-MEDIUM)
+----------------------------------
+No .pre-commit-config.yaml. Adding one ensures contributors run linting
+and formatting before every commit.
+
+Suggested hooks:
+  - ruff (lint + format)
+  - mypy
+  - check-yaml, check-toml
+  - trailing-whitespace, end-of-file-fixer
+
+
+8. Code Coverage Tracking (LOW-MEDIUM)
+---------------------------------------
+Tests exist but coverage is not measured. Adding pytest-cov and a coverage
+badge would highlight untested paths (e.g., mutation_engine, scope_engine,
+memory_skill).
+
+  pip install pytest-cov
+  pytest tests/ --cov=orchestrator --cov=tools --cov=routing --cov-report=term-missing
+
+
+9. Security Scanning (LOW)
+---------------------------
+No dependency vulnerability scanning. Consider:
+  - pip-audit in CI
+  - GitHub Dependabot for automated PRs
+  - Bandit for static security analysis of Python source
+
+
+10. Changelog (LOW)
+--------------------
+No CHANGELOG.md. As the project approaches releases, a changelog gives
+users a clear upgrade path. Consider Keep a Changelog format or
+auto-generation from conventional commits.
+
+
+11. Narrow Exception Handling (LOW)
+------------------------------------
+Several places use broad `except Exception`. While acceptable in CLI
+top-level handlers, inner functions (e.g., pipeline steps, MCP tools)
+should catch specific exceptions to avoid swallowing real bugs.
+
+
+12. Logging Configuration (LOW)
+---------------------------------
+MCP server's logs_read_recent reads from cfg.execution.logs_dir, but the
+actual logging setup in logging_setup.py may not write to that directory
+by default. Verify the log path is consistent end-to-end.
+
+
+13. Integration Test Harness (LOW)
+-----------------------------------
+Unit tests are solid. An integration test that spins up the MCP server,
+sends a tool call, and verifies the response would catch wiring issues
+between the server and underlying tools.
+
+
+14. Documentation Gaps (LOW)
+------------------------------
+  - docs/agent_profiles.md is referenced in CONTRIBUTING.md but may not exist.
+  - No API reference docs (consider Sphinx or mkdocs with autodoc).
+  - TUI module (tui/) has no documentation.
+
+
+Summary
+-------
+The highest-impact items are CI/CD (#1) and cross-platform support (#2).
+Together they unblock external contributors and non-Windows users. The
+remaining items improve maintainability and code health incrementally.

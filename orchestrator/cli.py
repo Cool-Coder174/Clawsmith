@@ -111,103 +111,46 @@ def run_task(task: str, repo_path: str, dry_run: bool, agent: str | None) -> Non
         sys.exit(1)
 
 
-@cli.command("yolo")
-@click.option("--goal", required=True, help="High-level software engineering goal.")
-@click.option("--repo-path", default=".", help="Path to the repository root.")
-@click.option("--dry-run", is_flag=True, help="Skip provider dispatch and job execution.")
-@click.option("--agent", default=None, help="Agent CLI id (cursor, claude_code, gemini_cli).")
-@click.option("--max-retries", default=2, type=int, help="Max retries per phase on failure.")
-@click.option("--skip-planning", is_flag=True, help="Skip planning — go straight to execution.")
-@click.option(
-    "--no-pause", is_flag=True,
-    help="Abort on phase failure instead of pausing the queue.",
-)
-def yolo(
-    goal: str,
-    repo_path: str,
-    dry_run: bool,
-    agent: str | None,
-    max_retries: int,
-    skip_planning: bool,
-    no_pause: bool,
-) -> None:
-    """YOLO mode — autonomous multi-phase task execution."""
-    from rich.live import Live
+def _yolo_build_strip(tracker: object, lifecycle: list[tuple[str, str]]) -> object:
+    """Build a Rich Text progress strip for YOLO mode."""
     from rich.text import Text
 
-    from orchestrator.agent_status import StatusTracker
-    from orchestrator.logging_setup import setup_logging
-    from orchestrator.schemas import YoloConfig
-    from orchestrator.yolo import YoloEngine
+    phase_idx = {k: i for i, (k, _) in enumerate(lifecycle)}
+    phase = tracker.phase.value
+    failed = phase == "failed"
+    retrying = phase == "retrying"
+    idx = phase_idx.get(phase, -1)
+    if retrying:
+        idx = phase_idx.get("executing", -1)
+    line = Text("  ")
+    for i, (key, label) in enumerate(lifecycle):
+        if i > 0:
+            line.append(" → ", style="dim")
+        if failed and i == idx:
+            line.append(f"[{label}]", style="bold red")
+        elif i < idx:
+            line.append(f"✓ {label}", style="green")
+        elif i == idx:
+            style = "bold yellow" if retrying else "bold cyan"
+            line.append(f"● {label}", style=style)
+        else:
+            line.append(f"○ {label}", style="dim")
 
-    setup_logging()
-    tracker = StatusTracker()
-    cfg = YoloConfig(
-        skip_planning=skip_planning,
-        max_retries=max_retries,
-        dry_run=dry_run,
-        agent_target=agent,
-        pause_on_failure=not no_pause,
-    )
+    yolo_meta = tracker._yolo_meta
+    if yolo_meta:
+        cur = yolo_meta.get("yolo_current_phase", "")
+        tot = yolo_meta.get("yolo_total_phases", "")
+        title = yolo_meta.get("yolo_phase_title", "")
+        attempt = yolo_meta.get("yolo_attempt", 1)
+        suffix = f" (retry {attempt})" if attempt > 1 else ""
+        line.append(f"  — Phase {cur}/{tot}: {title}{suffix}", style="dim")
+    elif tracker.events:
+        line.append(f"  — {tracker.events[-1].step}", style="dim")
+    return line
 
-    _LIFECYCLE = [
-        ("deployed", "Deploy"),
-        ("decomposing", "Decompose"),
-        ("planning", "Plan"),
-        ("queued", "Queue"),
-        ("executing", "Execute"),
-        ("verifying", "Verify"),
-        ("complete", "Complete"),
-    ]
-    _PHASE_IDX = {k: i for i, (k, _) in enumerate(_LIFECYCLE)}
 
-    def _build_strip() -> Text:
-        phase = tracker.phase.value
-        failed = phase == "failed"
-        retrying = phase == "retrying"
-        idx = _PHASE_IDX.get(phase, -1)
-        if retrying:
-            idx = _PHASE_IDX.get("executing", -1)
-        line = Text("  ")
-        for i, (key, label) in enumerate(_LIFECYCLE):
-            if i > 0:
-                line.append(" → ", style="dim")
-            if failed and i == idx:
-                line.append(f"[{label}]", style="bold red")
-            elif i < idx:
-                line.append(f"✓ {label}", style="green")
-            elif i == idx:
-                style = "bold yellow" if retrying else "bold cyan"
-                line.append(f"● {label}", style=style)
-            else:
-                line.append(f"○ {label}", style="dim")
-
-        yolo_meta = tracker._yolo_meta
-        if yolo_meta:
-            cur = yolo_meta.get("yolo_current_phase", "")
-            tot = yolo_meta.get("yolo_total_phases", "")
-            title = yolo_meta.get("yolo_phase_title", "")
-            attempt = yolo_meta.get("yolo_attempt", 1)
-            suffix = f" (retry {attempt})" if attempt > 1 else ""
-            line.append(f"  — Phase {cur}/{tot}: {title}{suffix}", style="dim")
-        elif tracker.events:
-            line.append(f"  — {tracker.events[-1].step}", style="dim")
-        return line
-
-    console.print()
-    console.print(Panel(f"[bold cyan]YOLO Mode[/bold cyan]  {goal}", expand=False))
-    console.print()
-
-    with Live(_build_strip(), console=console, refresh_per_second=10, transient=True) as live:
-        tracker.on_status(lambda _ev: live.update(_build_strip()))
-
-        result = asyncio.run(
-            YoloEngine().execute(goal, repo_path, config=cfg, status=tracker)
-        )
-
-    console.print(_build_strip())
-    console.print()
-
+def _yolo_print_results(result: object, cfg: object) -> None:
+    """Print the YOLO run results table and summary."""
     if result.phase_results:
         table = Table(title="Phase Results", show_lines=True)
         table.add_column("#", style="dim", width=3)
@@ -247,9 +190,133 @@ def yolo(
         console.print(f"  Failed:     {result.failed_phases}")
     if result.skipped_phases:
         console.print(f"  Skipped:    {result.skipped_phases}")
-    console.print(f"  Dry run:    {cfg.dry_run}")
+    console.print(f"  Backend:    CLI Agent (agent chat)")
+    if hasattr(cfg, "dry_run"):
+        console.print(f"  Dry run:    {cfg.dry_run}")
 
     if not result.success:
+        sys.exit(1)
+
+
+_YOLO_LIFECYCLE = [
+    ("deployed", "Deploy"),
+    ("decomposing", "Decompose"),
+    ("planning", "Plan"),
+    ("queued", "Queue"),
+    ("executing", "Execute"),
+    ("verifying", "Verify"),
+    ("complete", "Complete"),
+]
+
+
+@cli.command("yolo")
+@click.option("--goal", required=True, help="High-level software engineering goal.")
+@click.option("--repo-path", default=".", help="Path to the repository root.")
+@click.option("--dry-run", is_flag=True, help="Skip provider dispatch and job execution.")
+@click.option("--agent", default=None, help="Agent CLI id (cursor, claude_code, gemini_cli).")
+@click.option("--max-retries", default=2, type=int, help="Max retries per phase on failure.")
+@click.option("--skip-planning", is_flag=True, help="Skip planning — go straight to execution.")
+@click.option(
+    "--no-pause", is_flag=True,
+    help="Abort on phase failure instead of pausing the queue.",
+)
+def yolo(
+    goal: str,
+    repo_path: str,
+    dry_run: bool,
+    agent: str | None,
+    max_retries: int,
+    skip_planning: bool,
+    no_pause: bool,
+) -> None:
+    """YOLO mode — autonomous multi-phase task execution via CLI agent."""
+    from rich.live import Live
+
+    from orchestrator.agent_status import StatusTracker
+    from orchestrator.logging_setup import setup_logging
+    from orchestrator.schemas import YoloConfig
+    from orchestrator.yolo import YoloEngine
+
+    setup_logging()
+    tracker = StatusTracker()
+    cfg = YoloConfig(
+        skip_planning=skip_planning,
+        max_retries=max_retries,
+        dry_run=dry_run,
+        agent_target=agent,
+        pause_on_failure=not no_pause,
+    )
+
+    console.print()
+    console.print(Panel(f"[bold cyan]YOLO Mode[/bold cyan]  {goal}", expand=False))
+    console.print("[dim]  Execution backend: CLI Agent (agent chat)[/dim]")
+    console.print()
+
+    strip_fn = lambda: _yolo_build_strip(tracker, _YOLO_LIFECYCLE)
+
+    with Live(strip_fn(), console=console, refresh_per_second=10, transient=True) as live:
+        tracker.on_status(lambda _ev: live.update(strip_fn()))
+        result = asyncio.run(
+            YoloEngine().execute(goal, repo_path, config=cfg, status=tracker)
+        )
+
+    console.print(strip_fn())
+    console.print()
+    _yolo_print_results(result, cfg)
+
+
+@cli.command("resume")
+@click.option("--repo-path", default=".", help="Path to the repository root.")
+@click.option("--run-id", default=None, help="Specific run ID to resume. Default: most recent.")
+@click.option("--max-retries", default=2, type=int, help="Max retries per phase on failure.")
+@click.option(
+    "--no-pause", is_flag=True,
+    help="Abort on phase failure instead of pausing the queue.",
+)
+def resume(
+    repo_path: str,
+    run_id: str | None,
+    max_retries: int,
+    no_pause: bool,
+) -> None:
+    """Resume a paused or failed YOLO run from the last successful phase."""
+    from rich.live import Live
+
+    from orchestrator.agent_status import StatusTracker
+    from orchestrator.logging_setup import setup_logging
+    from orchestrator.schemas import YoloConfig
+    from orchestrator.yolo import YoloEngine
+
+    setup_logging()
+    tracker = StatusTracker()
+    cfg = YoloConfig(
+        max_retries=max_retries,
+        pause_on_failure=not no_pause,
+    )
+
+    console.print()
+    if run_id:
+        console.print(Panel(f"[bold yellow]Resuming Run[/bold yellow]  {run_id}", expand=False))
+    else:
+        console.print(Panel("[bold yellow]Resuming Latest Run[/bold yellow]", expand=False))
+    console.print()
+
+    strip_fn = lambda: _yolo_build_strip(tracker, _YOLO_LIFECYCLE)
+
+    try:
+        with Live(strip_fn(), console=console, refresh_per_second=10, transient=True) as live:
+            tracker.on_status(lambda _ev: live.update(strip_fn()))
+            result = asyncio.run(
+                YoloEngine().resume(
+                    repo_path, config=cfg, status=tracker, run_id=run_id,
+                )
+            )
+
+        console.print(strip_fn())
+        console.print()
+        _yolo_print_results(result, cfg)
+    except FileNotFoundError as exc:
+        console.print(f"[bold red]Cannot resume:[/bold red] {exc}")
         sys.exit(1)
 
 

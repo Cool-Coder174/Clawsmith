@@ -1,15 +1,18 @@
 """YOLO execution engine — autonomous multi-phase task execution.
 
-Replicates the core utility of Traycer's YOLO mode for OpenClaw:
-give it a goal, and it decomposes, plans, executes, verifies, retries,
+Give it a goal, and it decomposes, plans, executes, verifies, retries,
 and reports with minimal human intervention.
 
 Execution flow::
 
     Goal → Audit/Classify → Complexity Analysis → Decompose into Phases
          → Build FIFO Queue → For each phase:
-               Plan → Execute (pipeline) → Verify → Fix/Retry
+               Generate Prompt → CLI Agent Execute → Verify → Fix/Retry
          → Aggregate Results → YoloResult
+
+Each phase is executed by building a prompt, setting it into
+``CLAWSMITH_PROMPT``, and invoking ``agent chat "$env:CLAWSMITH_PROMPT"``.
+The execution backend is pluggable — ``CliAgentBackend`` is the default.
 """
 
 from __future__ import annotations
@@ -17,16 +20,16 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from execution.backend import BackendConfig, ExecutionBackend
+from execution.cli_agent import CliAgentBackend
+from execution.models import RunManifest
+from execution.phase_executor import PhaseExecutor
 from orchestrator.agent_status import AgentPhase, StatusTracker
 from orchestrator.logging_setup import get_logger
-from orchestrator.pipeline import OrchestrationPipeline
 from orchestrator.planner import TaskPlanner
 from orchestrator.schemas import (
     ContextPacket,
-    PipelineResult,
-    TaskClassification,
     YoloConfig,
-    YoloPhase,
     YoloPhaseResult,
     YoloPhaseStatus,
     YoloPlan,
@@ -51,11 +54,29 @@ class YoloEngine:
             "Add user authentication with JWT",
             repo_path=".",
         )
+
+    To use a custom execution backend::
+
+        from execution.backend import BackendConfig
+        from execution.cli_agent import CliAgentBackend
+
+        backend = CliAgentBackend(
+            config=BackendConfig(timeout_seconds=900),
+            agent_command="claude",
+            agent_subcommand="chat",
+        )
+        engine = YoloEngine(backend=backend)
     """
 
-    def __init__(self) -> None:
-        self._pipeline = OrchestrationPipeline()
+    def __init__(
+        self,
+        *,
+        backend: ExecutionBackend | None = None,
+        backend_config: BackendConfig | None = None,
+    ) -> None:
         self._planner = TaskPlanner()
+        self._backend = backend
+        self._backend_config = backend_config
 
     async def execute(
         self,
@@ -115,11 +136,20 @@ class YoloEngine:
             f"{len(plan.phases)} phases, bucket={plan.complexity.bucket.value}",
         )
 
+        # ── INIT EXECUTOR ─────────────────────────────────────────
+        executor = self._create_executor(root)
+        manifest = executor.init_run(
+            run_id=tracker.run_id,
+            goal=goal,
+            plan=plan,
+            config=cfg,
+        )
+
         # ── BUILD QUEUE ───────────────────────────────────────────
         tracker.transition(
             AgentPhase.queued,
             "Building execution queue",
-            f"{len(plan.phases)} phases enqueued",
+            f"{len(plan.phases)} phases enqueued, backend={executor.backend.backend_id}",
         )
         queue = TaskQueue(plan.phases)
 
@@ -133,8 +163,10 @@ class YoloEngine:
             except QueueExhausted:
                 break
 
-            phase_result = await self._execute_phase(
-                phase, plan, root, cfg, tracker, queue,
+            phase_result = await executor.execute_phase(
+                phase, plan, queue, tracker, cfg,
+                context=self._context_cache,
+                classification=self._classification_cache,
             )
 
             if phase_result.status == YoloPhaseStatus.failed and cfg.pause_on_failure:
@@ -166,6 +198,15 @@ class YoloEngine:
                 "YOLO run finished with failures",
                 f"{failed} phase(s) failed out of {queue.total}",
             )
+
+        # Finalize logging and manifest
+        executor.finalize_run(
+            success=all_ok,
+            duration=duration,
+            completed=completed,
+            failed=failed,
+            error=self._aggregate_errors(results) if not all_ok else None,
+        )
 
         return YoloResult(
             plan_id=plan.id,
@@ -216,102 +257,147 @@ class YoloEngine:
         self._classification_cache = classification
         return plan
 
-    # -- per-phase execution ------------------------------------------------
+    # -- executor factory ---------------------------------------------------
 
-    async def _execute_phase(
+    def _create_executor(self, root: Path) -> PhaseExecutor:
+        """Build a PhaseExecutor with the configured backend."""
+        bc = self._backend_config or BackendConfig(
+            working_directory=str(root),
+        )
+        backend = self._backend or CliAgentBackend(config=bc)
+        return PhaseExecutor(
+            repo_path=root,
+            backend=backend,
+            backend_config=bc,
+        )
+
+    # -- resume support -----------------------------------------------------
+
+    async def resume(
         self,
-        phase: YoloPhase,
-        plan: YoloPlan,
-        root: Path,
-        cfg: YoloConfig,
-        tracker: StatusTracker,
-        queue: TaskQueue,
-    ) -> YoloPhaseResult:
-        phase_start = time.monotonic()
-        phase_num = phase.index + 1
-        total = plan.complexity.recommended_phases
-        attempt = 0
-        last_error: str | None = None
+        repo_path: str,
+        config: YoloConfig | None = None,
+        status: StatusTracker | None = None,
+        run_id: str | None = None,
+    ) -> YoloResult:
+        """Resume a paused or failed YOLO run from the last successful phase.
 
-        while attempt <= cfg.max_retries:
-            attempt += 1
-            tracker.set_yolo_progress(phase_num, queue.total, phase.title, attempt)
+        If ``run_id`` is provided, resumes that specific run. Otherwise, finds
+        the most recent resumable run in the logs directory.
+        """
+        root = Path(repo_path).resolve()
+        manifest_dir = root / "logs" / "runs"
 
-            if attempt == 1:
-                tracker.transition(
-                    AgentPhase.executing,
-                    f"Phase {phase_num}/{queue.total}: {phase.title}",
-                )
+        if run_id:
+            manifest_path = manifest_dir / f"manifest_{run_id}.json"
+            if not manifest_path.exists():
+                raise FileNotFoundError(f"Run manifest not found: {manifest_path}")
+            manifest = RunManifest.load(manifest_path)
+        else:
+            manifest = RunManifest.find_resumable(manifest_dir)
+            if manifest is None:
+                raise FileNotFoundError("No resumable run found")
+
+        logger.info(
+            "Resuming run %s from phase %d",
+            manifest.run_id, manifest.last_completed_index + 1,
+        )
+
+        plan = YoloPlan.model_validate(manifest.plan_snapshot)
+        resume_cfg = config or YoloConfig.model_validate(manifest.config_snapshot)
+
+        phases_to_run = [
+            p for p in plan.phases if p.index > manifest.last_completed_index
+        ]
+        if not phases_to_run:
+            logger.info("All phases already completed for run %s", manifest.run_id)
+            return YoloResult(
+                plan_id=plan.id,
+                goal=manifest.goal,
+                repo_path=str(root),
+                success=True,
+                duration_seconds=0.0,
+            )
+
+        tracker = status or StatusTracker(run_id=manifest.run_id)
+        start = time.monotonic()
+
+        tracker.transition(
+            AgentPhase.deployed,
+            "Resuming YOLO run",
+            f"from phase {manifest.last_completed_index + 2}",
+        )
+
+        executor = self._create_executor(root)
+        executor._run_id = manifest.run_id
+        executor._manifest = manifest
+
+        if manifest.plan_snapshot:
+            context_data = manifest.plan_snapshot.get("_context_cache")
+            if context_data:
+                self._context_cache = ContextPacket.model_validate(context_data)
             else:
-                tracker.transition(
-                    AgentPhase.retrying,
-                    f"Retrying phase {phase_num}/{queue.total} (attempt {attempt})",
-                    last_error or "",
+                tracker.step("Re-gathering context for resume")
+                audit = RepoAuditor(root).audit()
+                repo_map = RepoMapper(root).map()
+                self._context_cache = ContextPacker(root).pack(
+                    audit, repo_map, manifest.goal,
+                )
+                self._classification_cache = TaskClassifier().classify(
+                    manifest.goal, self._context_cache,
                 )
 
-            objective = self._build_phase_prompt(phase, last_error, attempt)
+        queue = TaskQueue(phases_to_run)
+        tracker.transition(
+            AgentPhase.queued,
+            "Execution queue rebuilt",
+            f"{len(phases_to_run)} phases remaining",
+        )
 
-            pipeline_result = await self._pipeline.run(
-                objective,
-                str(root),
-                dry_run=cfg.dry_run,
-                agent_target=cfg.agent_target,
-                status=tracker,
+        while not queue.is_exhausted:
+            try:
+                phase = queue.next()
+            except QueuePaused:
+                break
+            except QueueExhausted:
+                break
+
+            phase_result = await executor.execute_phase(
+                phase, plan, queue, tracker, resume_cfg,
+                context=self._context_cache,
+                classification=self._classification_cache,
             )
 
-            # ── VERIFY ────────────────────────────────────────────
-            tracker.transition(
-                AgentPhase.verifying,
-                f"Verifying phase {phase_num}/{queue.total}",
-            )
+            if phase_result.status == YoloPhaseStatus.failed and resume_cfg.pause_on_failure:
+                queue.pause(f"Phase '{phase.title}' failed after all retries")
+                break
 
-            if pipeline_result.success:
-                duration = time.monotonic() - phase_start
-                return queue.complete(phase, pipeline_result, duration)
+        duration = time.monotonic() - start
+        results = queue.results()
+        completed = queue.completed_count
+        failed = queue.failed_count
+        all_ok = failed == 0 and completed == queue.total
 
-            last_error = pipeline_result.error_message or "Pipeline returned failure"
-            can_retry = attempt <= cfg.max_retries
-            if not can_retry:
-                duration = time.monotonic() - phase_start
-                result = queue.fail(phase, last_error, can_retry=False)
-                result.pipeline_result = pipeline_result
-                result.duration_seconds = duration
-                return result
+        executor.finalize_run(
+            success=all_ok,
+            duration=duration,
+            completed=completed,
+            failed=failed,
+        )
 
-            queue.fail(phase, last_error, can_retry=True)
-            _ = queue.next()
-
-        duration = time.monotonic() - phase_start
-        result = queue.fail(phase, last_error or "Max retries exceeded", can_retry=False)
-        result.duration_seconds = duration
-        return result
-
-    # -- prompt building ----------------------------------------------------
-
-    def _build_phase_prompt(
-        self,
-        phase: YoloPhase,
-        last_error: str | None,
-        attempt: int,
-    ) -> str:
-        parts = [phase.objective]
-
-        if phase.acceptance_criteria:
-            criteria = "\n".join(f"- {c}" for c in phase.acceptance_criteria)
-            parts.append(f"\n\nAcceptance criteria:\n{criteria}")
-
-        if phase.files_in_scope:
-            files = ", ".join(phase.files_in_scope[:15])
-            parts.append(f"\n\nFiles in scope: {files}")
-
-        if last_error and attempt > 1:
-            parts.append(
-                f"\n\nPREVIOUS ATTEMPT FAILED (attempt {attempt - 1}):\n"
-                f"{last_error}\n\n"
-                "Fix the error described above while still completing the objective."
-            )
-
-        return "".join(parts)
+        return YoloResult(
+            plan_id=plan.id,
+            goal=manifest.goal,
+            repo_path=str(root),
+            phase_results=results,
+            total_phases=queue.total,
+            completed_phases=completed,
+            failed_phases=failed,
+            success=all_ok,
+            error_message=self._aggregate_errors(results) if not all_ok else None,
+            duration_seconds=duration,
+            agent_status=tracker.summary(),
+        )
 
     @staticmethod
     def _aggregate_errors(results: list[YoloPhaseResult]) -> str:
