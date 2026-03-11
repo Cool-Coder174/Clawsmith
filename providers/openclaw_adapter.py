@@ -79,6 +79,51 @@ OPENCLAW_TOOL_DEFINITIONS: list[dict] = [
         "description": "Generate a structured task prompt from repo context.",
         "input": "task_description: str, repo_path: str",
     },
+    {
+        "name": "machine_profile",
+        "description": "Get the machine hardware profile including CPU, RAM, GPU, and storage.",
+        "input": "",
+    },
+    {
+        "name": "recommend_models",
+        "description": "Get LLM bundle recommendations based on hardware profile.",
+        "input": "intent: str",
+    },
+    {
+        "name": "installed_models",
+        "description": "List all locally installed LLM models.",
+        "input": "",
+    },
+    {
+        "name": "workspace_graph",
+        "description": "Get the workspace graph of linked repos and their dependencies.",
+        "input": "",
+    },
+    {
+        "name": "scope_contract",
+        "description": "Get or create a scope contract for a task.",
+        "input": "task_description: str, primary_repo: str",
+    },
+    {
+        "name": "scope_check",
+        "description": "Check if a file or repo is in scope for the current task.",
+        "input": "contract_id: str, path: str",
+    },
+    {
+        "name": "mutation_propose",
+        "description": "Propose a configuration mutation through the guarded mutation system.",
+        "input": "mutation_type: str, reason: str, target: str, changes: dict",
+    },
+    {
+        "name": "mutation_status",
+        "description": "Get the status of a mutation proposal.",
+        "input": "proposal_id: str",
+    },
+    {
+        "name": "memory_sync",
+        "description": "Sync hardware profile and preferences to persistent memory files.",
+        "input": "",
+    },
 ]
 
 
@@ -125,6 +170,16 @@ class OpenClawAdapter:
             lines.append("")
 
         lines.extend([
+            "## Capabilities",
+            "",
+            "- **Hardware Discovery:** Detect CPU, RAM, GPU, and storage to build a machine profile.",
+            "- **Model Recommendation:** Suggest optimal LLM bundles based on hardware and intent.",
+            "- **Model Inventory:** List locally installed models across runtimes (Ollama, etc.).",
+            "- **Workspace Graph:** Map linked repos and their dependency relationships.",
+            "- **Scope Engine:** Create and enforce scope contracts for multi-repo tasks.",
+            "- **Guarded Mutation:** Propose, review, and apply configuration changes with staging and rollback.",
+            "- **Memory Sync:** Persist hardware profiles and preferences to workspace memory files.",
+            "",
             "## Required Environment Variables",
             "",
             "- `CLAWSMITH_CONFIG_PATH` — path to ClawSmith config YAML",

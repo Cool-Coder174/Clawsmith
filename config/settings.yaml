@@ -79,3 +79,42 @@ agents:
   default_output_format: null      # 'json', 'text', or null for agent default
   show_experimental: false         # show adapters marked experimental in doctor output
   overrides: {}                    # per-agent overrides, e.g. cursor: {executable: "C:\\...\\cursor.exe"}
+
+discovery:
+  cache_profile: true
+  profile_cache_path: ".clawsmith/machine-profile.json"
+  gpu_detection_timeout: 10    # seconds
+  storage_min_free_gb: 20      # warn if less than this
+
+recommendation:
+  default_intent: coding
+  prefer_quantized: true
+  max_model_size_gb: 50
+  prefer_runtime: ollama
+
+install:
+  default_model_path: null     # null = auto-detect best disk
+  ollama_auto_pull: true
+  verify_checksums: true
+  max_concurrent_downloads: 1
+
+memory:
+  workspace_root: "."
+  auto_sync_on_detect: true
+  memory_dir: "memory"
+  clawsmith_dir: "clawsmith"
+
+scope:
+  default_allow_multi_repo: false
+  default_read_only_external: true
+  contracts_dir: ".clawsmith/scopes"
+
+mutation:
+  self_mutation_enabled: false
+  require_approval: true
+  require_validation: true
+  require_staging: true
+  max_affected_files: 20
+  staging_dir: ".clawsmith/staging"
+  backups_dir: ".clawsmith/backups"
+  audit_log: ".clawsmith/mutation-audit.json"

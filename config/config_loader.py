@@ -83,6 +83,51 @@ class AgentsConfig(BaseModel):
     overrides: dict[str, AgentOverride] = Field(default_factory=dict)
 
 
+class DiscoveryConfig(BaseModel):
+    cache_profile: bool = True
+    profile_cache_path: str = ".clawsmith/machine-profile.json"
+    gpu_detection_timeout: int = 10
+    storage_min_free_gb: int = 20
+
+
+class RecommendationConfig(BaseModel):
+    default_intent: str = "coding"
+    prefer_quantized: bool = True
+    max_model_size_gb: int = 50
+    prefer_runtime: str = "ollama"
+
+
+class InstallConfig(BaseModel):
+    default_model_path: str | None = None
+    ollama_auto_pull: bool = True
+    verify_checksums: bool = True
+    max_concurrent_downloads: int = 1
+
+
+class MemoryConfig(BaseModel):
+    workspace_root: str = "."
+    auto_sync_on_detect: bool = True
+    memory_dir: str = "memory"
+    clawsmith_dir: str = "clawsmith"
+
+
+class ScopeConfig(BaseModel):
+    default_allow_multi_repo: bool = False
+    default_read_only_external: bool = True
+    contracts_dir: str = ".clawsmith/scopes"
+
+
+class MutationConfig(BaseModel):
+    self_mutation_enabled: bool = False
+    require_approval: bool = True
+    require_validation: bool = True
+    require_staging: bool = True
+    max_affected_files: int = 20
+    staging_dir: str = ".clawsmith/staging"
+    backups_dir: str = ".clawsmith/backups"
+    audit_log: str = ".clawsmith/mutation-audit.json"
+
+
 class ClawsmithConfig(BaseModel):
     models: ModelsConfig
     routing: RoutingConfig = RoutingConfig()
@@ -90,6 +135,12 @@ class ClawsmithConfig(BaseModel):
     mcp_server: McpServerConfig = McpServerConfig()
     openclaw: OpenClawConfig = OpenClawConfig()
     agents: AgentsConfig = AgentsConfig()
+    discovery: DiscoveryConfig = DiscoveryConfig()
+    recommendation: RecommendationConfig = RecommendationConfig()
+    install: InstallConfig = InstallConfig()
+    memory: MemoryConfig = MemoryConfig()
+    scope: ScopeConfig = ScopeConfig()
+    mutation: MutationConfig = MutationConfig()
 
 
 _ENV_PREFIX = "CLAWSMITH_"
@@ -143,7 +194,7 @@ def _apply_env_overrides(data: dict[str, Any]) -> None:
 
 
 _REQUIRED_SECTIONS = ("models", "routing", "execution", "mcp_server", "openclaw")
-_OPTIONAL_SECTIONS = ("agents",)
+_OPTIONAL_SECTIONS = ("agents", "discovery", "recommendation", "install", "memory", "scope", "mutation")
 
 
 def _validate_path_field(value: str, field_name: str, errors: list[str]) -> None:
