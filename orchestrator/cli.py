@@ -826,3 +826,131 @@ def rollback(proposal_id: str) -> None:
     except Exception as exc:
         console.print(f"[bold red]Rollback failed:[/bold red] {exc}")
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Self-update
+# ---------------------------------------------------------------------------
+
+
+@cli.command("update")
+@click.option(
+    "--branch", default=None,
+    help="Remote branch to pull (default: current branch's upstream).",
+)
+@click.option("--force", is_flag=True, help="Discard local changes before pulling.")
+def update(branch: str | None, force: bool) -> None:
+    """Pull the latest source from Git and re-install ClawSmith."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("git"):
+        console.print("[bold red]git is not on PATH — cannot update.[/bold red]")
+        sys.exit(1)
+
+    git_dir = _REPO_ROOT / ".git"
+    if not git_dir.exists():
+        console.print(
+            "[bold red]Not a git checkout.[/bold red]  "
+            "Clone from source first, then run update."
+        )
+        sys.exit(1)
+
+    console.print("[bold cyan]ClawSmith self-update[/bold cyan]\n")
+
+    # 1 — Save current version for comparison
+    try:
+        old_head = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(_REPO_ROOT), capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    except Exception:
+        old_head = "unknown"
+
+    # 2 — Optional hard reset
+    if force:
+        console.print("  Discarding local changes...", style="muted")
+        subprocess.run(
+            ["git", "reset", "--hard"],
+            cwd=str(_REPO_ROOT), capture_output=True,
+        )
+        subprocess.run(
+            ["git", "clean", "-fd"],
+            cwd=str(_REPO_ROOT), capture_output=True,
+        )
+
+    # 3 — Fetch + pull
+    pull_cmd = ["git", "pull", "--ff-only"]
+    if branch:
+        pull_cmd = ["git", "pull", "--ff-only", "origin", branch]
+
+    console.print("  Pulling latest...", style="muted")
+    pull = subprocess.run(
+        pull_cmd,
+        cwd=str(_REPO_ROOT), capture_output=True, text=True,
+    )
+
+    if pull.returncode != 0:
+        stderr = pull.stderr.strip()
+        if "not possible to fast-forward" in stderr or "divergent" in stderr:
+            console.print(
+                "[yellow]Cannot fast-forward.[/yellow] "
+                "Use [bold]--force[/bold] to discard local changes, "
+                "or merge manually."
+            )
+        else:
+            console.print(f"[bold red]git pull failed:[/bold red] {stderr}")
+        sys.exit(1)
+
+    try:
+        new_head = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(_REPO_ROOT), capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    except Exception:
+        new_head = "unknown"
+
+    if old_head == new_head:
+        console.print(f"  Already up to date ({old_head}).")
+    else:
+        console.print(f"  Updated [cyan]{old_head}[/cyan] → [cyan]{new_head}[/cyan]")
+
+        try:
+            log_out = subprocess.run(
+                ["git", "log", "--oneline", f"{old_head}..{new_head}"],
+                cwd=str(_REPO_ROOT), capture_output=True, text=True,
+            ).stdout.strip()
+            if log_out:
+                console.print()
+                for line in log_out.splitlines()[:15]:
+                    console.print(f"    {line}", style="dim")
+                total = log_out.count("\n") + 1
+                if total > 15:
+                    console.print(f"    ... and {total - 15} more", style="dim")
+        except Exception:
+            pass
+
+    # 4 — Re-install package
+    console.print("\n  Re-installing package...", style="muted")
+    pip_exe = shutil.which("pip") or shutil.which("pip3") or sys.executable
+    pip_cmd = (
+        [pip_exe, "install", "-e", ".[dev]"]
+        if pip_exe != sys.executable
+        else [sys.executable, "-m", "pip", "install", "-e", ".[dev]"]
+    )
+
+    pip_result = subprocess.run(
+        pip_cmd,
+        cwd=str(_REPO_ROOT), capture_output=True, text=True,
+    )
+
+    if pip_result.returncode != 0:
+        console.print(
+            f"[bold red]pip install failed:[/bold red]\n{pip_result.stderr.strip()}"
+        )
+        sys.exit(1)
+
+    console.print(
+        "\n[bold green]Update complete.[/bold green]  "
+        "Restart any running ClawSmith sessions to use the new version."
+    )

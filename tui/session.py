@@ -233,6 +233,10 @@ class ChatSession:
             self.console.print(
                 f"  [green]{SYM_CHECK}[/green] API keys configured"
             )
+        if result.mcp_running:
+            self.console.print(
+                f"  [green]{SYM_CHECK}[/green] MCP server running"
+            )
 
         for issue in result.issues:
             if issue.severity == "error":

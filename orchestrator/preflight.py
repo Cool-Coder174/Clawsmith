@@ -1,7 +1,8 @@
 """Lightweight startup preflight for the ClawSmith chat session.
 
-Runs fast checks to verify that at least one inference path is available
-and surfaces clear, actionable guidance when dependencies are missing.
+Runs fast checks to verify that at least one inference path is available,
+launches companion services (MCP server, Ollama), and surfaces clear,
+actionable guidance when dependencies are missing.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,6 +44,7 @@ class PreflightResult:
     has_api_keys: bool = False
     available_tiers: list[str] = field(default_factory=list)
     config_ok: bool = False
+    mcp_running: bool = False
 
     @property
     def can_run_tasks(self) -> bool:
@@ -176,6 +179,22 @@ def run_preflight() -> PreflightResult:
             )
         )
 
+    # --- MCP server ---------------------------------------------------
+    if _mcp_reachable():
+        result.mcp_running = True
+    elif result.config_ok:
+        thread = start_mcp_server_background()
+        result.mcp_running = thread is not None and _mcp_reachable()
+        if not result.mcp_running:
+            result.issues.append(
+                PreflightIssue(
+                    severity="warning",
+                    component="MCP Server",
+                    message="MCP server could not be started",
+                    repair_hint="Run manually: clawsmith start",
+                )
+            )
+
     return result
 
 
@@ -210,3 +229,57 @@ def try_start_ollama() -> bool:
         return _ollama_reachable()
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# MCP server lifecycle
+# ---------------------------------------------------------------------------
+
+_MCP_HOST = "127.0.0.1"
+_MCP_PORT = 8765
+
+
+def _mcp_reachable(timeout: float = 1.0) -> bool:
+    """Quick TCP probe to check if the MCP server is already listening."""
+    try:
+        with socket.create_connection((_MCP_HOST, _MCP_PORT), timeout=timeout):
+            return True
+    except (OSError, TimeoutError):
+        return False
+
+
+def start_mcp_server_background() -> threading.Thread | None:
+    """Launch the MCP server in a daemon thread.
+
+    Returns the thread if the server was started, or ``None`` if it was
+    already running.  The thread is a daemon so it dies with the process.
+    """
+    try:
+        from config.config_loader import get_config
+
+        cfg = get_config()
+        host = cfg.mcp_server.host
+        port = cfg.mcp_server.port
+    except Exception:
+        host, port = _MCP_HOST, _MCP_PORT
+
+    if _mcp_reachable():
+        return None
+
+    def _serve() -> None:
+        try:
+            from mcp_server.server import mcp as mcp_app
+
+            mcp_app.run(transport="sse", host=host, port=port)
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_serve, daemon=True, name="clawsmith-mcp")
+    t.start()
+
+    for _ in range(10):
+        time.sleep(0.3)
+        if _mcp_reachable():
+            break
+
+    return t
