@@ -279,15 +279,19 @@ def run_preflight(
 # ---------------------------------------------------------------------------
 
 
-def pull_ollama_model(model_name: str) -> bool:
+def pull_ollama_model(model_name: str, *, quiet: bool = False) -> bool:
     """Pull a single model via ``ollama pull``.
 
-    Stdout/stderr are not captured so download progress is visible in the
-    terminal.  Returns ``True`` on success.
+    When *quiet* is ``False`` (the default) Ollama's own progress output is
+    visible in the terminal.  Set *quiet* to ``True`` to suppress it so the
+    caller can show its own indicator.  Returns ``True`` on success.
     """
     try:
+        pipe = subprocess.DEVNULL if quiet else None
         result = subprocess.run(
             ["ollama", "pull", model_name],
+            stdout=pipe,
+            stderr=pipe,
             timeout=1800,
         )
         return result.returncode == 0

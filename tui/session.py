@@ -369,11 +369,15 @@ class ChatSession:
 
                 pulled: list[str] = []
                 for model in result.models_missing:
-                    self.console.print(
+                    with self.console.status(
                         f"  Pulling [cyan]{model}[/cyan]…",
-                        style="muted",
-                    )
-                    if pull_ollama_model(model):
+                        spinner="dots",
+                        spinner_style="cyan",
+                    ):
+                        success = pull_ollama_model(
+                            model, quiet=True,
+                        )
+                    if success:
                         self.console.print(
                             f"  [green]{SYM_CHECK}[/green] "
                             f"Pulled {model}"
@@ -493,12 +497,13 @@ class ChatSession:
 
         from orchestrator.preflight import pull_ollama_model
 
-        self.console.print(
-            f"  Pulling [cyan]{model}[/cyan]… "
-            "(this may take a few minutes)",
-            style="muted",
-        )
-        if pull_ollama_model(model):
+        with self.console.status(
+            f"  Pulling [cyan]{model}[/cyan]…",
+            spinner="dots",
+            spinner_style="cyan",
+        ):
+            success = pull_ollama_model(model, quiet=True)
+        if success:
             self.console.print(
                 f"  [green]{SYM_CHECK}[/green] "
                 f"Pulled {model} — retrying…"
@@ -748,49 +753,47 @@ def _handle_scope(
 # -----------------------------------------------------------------------
 
 _RESPONSE_GREETING = (
-    "Hello! I'm **ClawSmith**, your local-first AI orchestration "
-    "assistant. Type **/help** for available commands, or describe "
-    "a coding task and I'll route it through the pipeline.\n\n"
-    "Try something like:\n"
-    "- \"Fix the bug in auth.py\"\n"
-    "- \"Add unit tests for the API module\"\n"
-    "- Or use **/detect** to scan your hardware"
+    "Hey — **ClawSmith** here, running local on your machine. "
+    "I'm your forge for coding tasks: toss me a problem and I'll "
+    "hammer out the right approach.\n\n"
+    "A few ways to get started:\n"
+    "- Describe a task: *\"Fix the bug in auth.py\"*\n"
+    "- Explore your setup: **/detect**, **/recommend**\n"
+    "- See everything: **/help**"
 )
 
 _RESPONSE_CAPABILITIES = (
-    "Here's what I can do:\n\n"
-    "**Slash commands** (type /help for the full list):\n"
-    "- **/detect** — scan your hardware and AI tooling\n"
-    "- **/recommend** — get local model recommendations\n"
-    "- **/agents** — see detected agent CLIs\n"
-    "- **/doctor** — run environment health checks\n"
-    "- **/memory** — view persistent architecture memory\n"
-    "- **/scope** — manage cross-repo scope contracts\n\n"
-    "**Task execution** — describe a coding task in natural language:\n"
-    "1. I'll audit your repository structure\n"
+    "Short version: I'm your local AI forge for coding tasks. "
+    "Here's the rundown.\n\n"
+    "**Quick commands** (**/help** for the full list):\n"
+    "- **/detect** — scan your hardware\n"
+    "- **/recommend** — find the right local model\n"
+    "- **/agents** — see which agent CLIs you've got\n"
+    "- **/doctor** — environment health check\n"
+    "- **/memory** — persistent architecture state\n"
+    "- **/scope** — cross-repo scope contracts\n\n"
+    "**Task execution** — just describe what you need in plain English:\n"
+    "1. I audit the repo\n"
     "2. Classify the task complexity\n"
-    "3. Route to the right model tier (local or cloud)\n"
+    "3. Pick the right model tier\n"
     "4. Generate an optimized prompt\n"
-    "5. Execute via your preferred agent CLI "
-    "(Cursor, Claude, Gemini)\n\n"
-    "**Examples:**\n"
-    "- \"Fix the authentication bug in login.py\"\n"
-    "- \"Add dark mode support to the settings page\"\n"
-    "- \"Refactor the database layer to use async\"\n"
-    "- \"Run tests and fix any failures\""
+    "5. Fire it off through your agent CLI\n\n"
+    "**Try it:**\n"
+    "- *\"Fix the auth bug in login.py\"*\n"
+    "- *\"Refactor the database layer to async\"*\n"
+    "- *\"Run tests and fix any failures\"*"
 )
 
 _RESPONSE_THANKS = (
-    "You're welcome! Let me know if there's anything else "
-    "I can help with."
+    "Anytime. The forge is always hot — just holler when you "
+    "need something."
 )
 
 _RESPONSE_GUIDANCE = (
-    "I'm not sure what you'd like me to do. Try one of these:\n\n"
-    "- **Describe a coding task**: \"Fix the bug in auth.py\"\n"
-    "- **Use a slash command**: **/help**, **/detect**, "
-    "**/recommend**\n"
-    "- **Ask about capabilities**: \"What can you do?\""
+    "Not sure what to make of that one. Give me something to work with:\n\n"
+    "- **A coding task**: *\"Fix the bug in auth.py\"*\n"
+    "- **A slash command**: **/help**, **/detect**, **/recommend**\n"
+    "- **A question**: *\"What can you do?\"*"
 )
 
 
