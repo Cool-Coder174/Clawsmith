@@ -85,10 +85,11 @@ def _api_keys_present() -> dict[str, bool]:
 
 def _ollama_list_models() -> set[str]:
     """Return base names of models available in the local Ollama instance."""
+    import concurrent.futures
     import json
     import urllib.request
 
-    try:
+    def _fetch() -> set[str]:
         url = f"http://{_OLLAMA_HOST}:{_OLLAMA_PORT}/api/tags"
         with urllib.request.urlopen(url, timeout=3) as resp:
             data = json.loads(resp.read())
@@ -99,6 +100,10 @@ def _ollama_list_models() -> set[str]:
             if base:
                 names.add(base)
         return names
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(_fetch).result(timeout=4)
     except Exception:
         return set()
 
@@ -348,10 +353,10 @@ def start_mcp_server_background() -> threading.Thread | None:
     t = threading.Thread(target=_serve, daemon=True, name="clawsmith-mcp")
     t.start()
 
-    deadline = time.monotonic() + 3.0
+    deadline = time.monotonic() + 1.5
     while time.monotonic() < deadline:
-        time.sleep(0.3)
-        if _mcp_reachable(timeout=0.15):
+        time.sleep(0.2)
+        if _mcp_reachable(timeout=0.1):
             break
 
     return t

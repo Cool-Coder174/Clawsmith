@@ -228,12 +228,38 @@ class ChatSession:
 
     def _run_preflight(self) -> None:
         """Check dependencies at startup and guide the user through repairs."""
-        from orchestrator.preflight import run_preflight, try_start_ollama
+        import threading
+        from orchestrator.preflight import (
+            PreflightResult, run_preflight, try_start_ollama,
+        )
 
         self.console.print("  [bold]Checking dependencies...[/bold]")
         self.console.print()
 
-        result = run_preflight()
+        result_box: list[PreflightResult | None] = [None]
+
+        def _check() -> None:
+            try:
+                result_box[0] = run_preflight()
+            except Exception:
+                pass
+
+        check_thread = threading.Thread(target=_check, daemon=True)
+        check_thread.start()
+        check_thread.join(timeout=10)
+
+        if check_thread.is_alive() or result_box[0] is None:
+            self.console.print(
+                f"  [yellow]![/yellow] Dependency check timed out"
+            )
+            self.console.print(
+                f"    [dim]{SYM_ARROW} Continuing without full "
+                f"preflight — try /doctor later[/dim]"
+            )
+            self.renderer.separator()
+            return
+
+        result = result_box[0]
 
         if result.config_ok:
             self.console.print(
