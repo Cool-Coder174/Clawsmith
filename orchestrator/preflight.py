@@ -45,6 +45,7 @@ class PreflightResult:
     available_tiers: list[str] = field(default_factory=list)
     config_ok: bool = False
     mcp_running: bool = False
+    models_missing: list[str] = field(default_factory=list)
 
     @property
     def can_run_tasks(self) -> bool:
@@ -80,6 +81,44 @@ def _api_keys_present() -> dict[str, bool]:
         val = os.environ.get(name, "").strip()
         result[name] = bool(val) and val not in ("your-key-here", "sk-...")
     return result
+
+
+def _ollama_list_models() -> set[str]:
+    """Return base names of models available in the local Ollama instance."""
+    import json
+    import urllib.request
+
+    try:
+        url = f"http://{_OLLAMA_HOST}:{_OLLAMA_PORT}/api/tags"
+        with urllib.request.urlopen(url, timeout=3) as resp:
+            data = json.loads(resp.read())
+        names: set[str] = set()
+        for m in data.get("models", []):
+            full_name = m.get("name", "")
+            base = full_name.split(":")[0]
+            if base:
+                names.add(base)
+        return names
+    except Exception:
+        return set()
+
+
+def _required_ollama_models() -> list[str]:
+    """Return the bare Ollama model names needed by the local tiers."""
+    try:
+        from config.config_loader import get_config
+
+        cfg = get_config()
+        models: list[str] = []
+        for tier in (cfg.models.local_router, cfg.models.local_code):
+            name = tier.model_name
+            if name.startswith("ollama/"):
+                name = name[len("ollama/"):]
+            if name not in models:
+                models.append(name)
+        return models
+    except Exception:
+        return ["mistral", "codellama"]
 
 
 def _config_ok() -> bool:
@@ -135,6 +174,11 @@ def run_preflight() -> PreflightResult:
         result.ollama_reachable = _ollama_reachable()
         if result.ollama_reachable:
             result.available_tiers.extend(["local_router", "local_code"])
+            available_models = _ollama_list_models()
+            required = _required_ollama_models()
+            result.models_missing = [
+                m for m in required if m not in available_models
+            ]
         else:
             result.issues.append(
                 PreflightIssue(
@@ -201,6 +245,22 @@ def run_preflight() -> PreflightResult:
 # ---------------------------------------------------------------------------
 # Auto-repair helpers
 # ---------------------------------------------------------------------------
+
+
+def pull_ollama_model(model_name: str) -> bool:
+    """Pull a single model via ``ollama pull``.
+
+    Stdout/stderr are not captured so download progress is visible in the
+    terminal.  Returns ``True`` on success.
+    """
+    try:
+        result = subprocess.run(
+            ["ollama", "pull", model_name],
+            timeout=1800,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
 
 
 def try_start_ollama() -> bool:

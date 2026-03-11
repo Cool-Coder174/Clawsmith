@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 from rich.console import Console
@@ -130,6 +131,18 @@ def _looks_like_task(q: str) -> bool:
     ):
         return True
     return any("/" in tok or "\\" in tok for tok in tokens)
+
+
+def _extract_missing_model(error_str: str) -> str | None:
+    """Extract the model name from an Ollama 'model not found' error."""
+    for pattern in (
+        r"""model\s+['"]([^'"]+)['"]\s+not found""",
+        r"""model\s+(\S+)\s+not found""",
+    ):
+        m = re.search(pattern, error_str, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return None
 
 
 def _detect_intent(query: str) -> str:
@@ -288,6 +301,45 @@ class ChatSession:
                         "[bold]ollama serve[/bold] manually."
                     )
 
+        if result.ollama_reachable and result.models_missing:
+            missing_str = ", ".join(result.models_missing)
+            self.console.print(
+                f"  [yellow]![/yellow] Required local models not "
+                f"installed: [bold]{missing_str}[/bold]"
+            )
+            try:
+                answer = self.console.input(
+                    "  Pull missing models now? [bold]\\[Y/n][/bold] "
+                ).strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                answer = "n"
+
+            if answer in ("", "y", "yes"):
+                from orchestrator.preflight import pull_ollama_model
+
+                pulled: list[str] = []
+                for model in result.models_missing:
+                    self.console.print(
+                        f"  Pulling [cyan]{model}[/cyan]…",
+                        style="muted",
+                    )
+                    if pull_ollama_model(model):
+                        self.console.print(
+                            f"  [green]{SYM_CHECK}[/green] "
+                            f"Pulled {model}"
+                        )
+                        pulled.append(model)
+                    else:
+                        self.console.print(
+                            f"  [red]{SYM_CROSS}[/red] "
+                            f"Failed to pull {model}. "
+                            f"Try: [bold]ollama pull {model}[/bold]"
+                        )
+                result.models_missing = [
+                    m for m in result.models_missing
+                    if m not in pulled
+                ]
+
         self.console.print()
 
         if result.available_tiers:
@@ -340,7 +392,17 @@ class ChatSession:
             try:
                 response = asyncio.run(brain.respond(query))
             except Exception as exc:
-                ts.emit(ThoughtPhase.error, str(exc))
+                error_str = str(exc)
+                model = _extract_missing_model(error_str)
+                if model:
+                    ts.emit(
+                        ThoughtPhase.error,
+                        f"Model '{model}' not installed",
+                    )
+                    return self._offer_model_pull_and_retry(
+                        query, model, ts.events,
+                    )
+                ts.emit(ThoughtPhase.error, error_str)
                 return (
                     f"LLM error: {exc}\n\n"
                     "Falling back to built-in handler.",
@@ -350,6 +412,59 @@ class ChatSession:
             events = ts.events
 
         return response, events
+
+    def _offer_model_pull_and_retry(
+        self,
+        query: str,
+        model: str,
+        events: list,
+    ) -> tuple[str, list]:
+        """Prompt the user to pull a missing Ollama model, then retry."""
+        self.console.print()
+        self.console.print(
+            f"  [yellow]![/yellow] Ollama model "
+            f"[bold]{model}[/bold] is not installed."
+        )
+        try:
+            answer = self.console.input(
+                f"  Pull [bold]{model}[/bold] now? "
+                "[bold]\\[Y/n][/bold] "
+            ).strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            answer = "n"
+
+        if answer not in ("", "y", "yes"):
+            return (
+                f"Model '{model}' is not installed. "
+                f"Install it with: **ollama pull {model}**\n\n"
+                "Falling back to built-in handler.",
+                events,
+            )
+
+        from orchestrator.preflight import pull_ollama_model
+
+        self.console.print(
+            f"  Pulling [cyan]{model}[/cyan]… "
+            "(this may take a few minutes)",
+            style="muted",
+        )
+        if pull_ollama_model(model):
+            self.console.print(
+                f"  [green]{SYM_CHECK}[/green] "
+                f"Pulled {model} — retrying…"
+            )
+            self.renderer.separator()
+            return self._execute_via_brain(query)
+
+        self.console.print(
+            f"  [red]{SYM_CROSS}[/red] Failed to pull {model}. "
+            f"Try manually: [bold]ollama pull {model}[/bold]"
+        )
+        return (
+            f"Could not install model '{model}'.\n\n"
+            "Falling back to built-in handler.",
+            events,
+        )
 
 
 # -----------------------------------------------------------------------
