@@ -123,7 +123,7 @@ def _looks_like_task(q: str) -> bool:
         return True
     if words & _CODE_CONTEXT:
         return True
-    tokens = q.split()
+    tokens = q.lower().split()
     if any(
         any(tok.endswith(ext) for ext in _FILE_EXTENSIONS)
         for tok in tokens
