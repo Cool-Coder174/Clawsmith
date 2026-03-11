@@ -4,7 +4,7 @@
 
 **Route simple work to local Ollama, save cloud spend for harder problems, and expose everything through MCP for editor and agent integrations.**
 
-ClawSmith detects your hardware, recommends local LLMs, auto-detects installed agent CLIs (`Cursor`, `Claude Code`, `Gemini`, `OpenClaw`), and routes every task to the cheapest capable model tier. Small fixes stay on your machine. Bigger refactors escalate only when they need more capability.
+ClawSmith detects your hardware, recommends local LLMs, auto-detects installed agent CLIs (`Cursor`, `Claude Code`, `Gemini`, `OpenClaw`), and routes every task to the right model tier for speed, quality, and control. Small fixes stay on your machine. Bigger refactors scale up only when they need more capability.
 
 ---
 
