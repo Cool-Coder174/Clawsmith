@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import litellm
@@ -403,6 +405,96 @@ _TOOL_DISPATCH: dict[str, Any] = {
 }
 
 # ---------------------------------------------------------------------------
+# Fallback parser for tool calls serialized in message content
+# ---------------------------------------------------------------------------
+
+
+def _try_parse_content_tool_calls(
+    content: str,
+    valid_names: frozenset[str],
+) -> list[SimpleNamespace] | None:
+    """Parse tool-call JSON that a local model emitted as plain text.
+
+    Some Ollama / LiteLLM models return tool invocations as a JSON blob
+    inside ``message.content`` rather than the structured ``tool_calls``
+    field.  This function recognises the most common serialised formats
+    and converts them into lightweight objects whose shape matches
+    ``response.choices[0].message.tool_calls`` entries, so the rest of
+    the agentic loop can handle them identically.
+
+    Returns a list of tool-call-like ``SimpleNamespace`` objects, or
+    ``None`` when *content* does not look like a tool-call envelope.
+    """
+    if not content:
+        return None
+
+    text = content.strip()
+
+    # Strip optional markdown code fences
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+        text = text.strip()
+
+    if not text or text[0] not in ("{", "["):
+        return None
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+    # Unwrap {"Tool Calls": [...]}, {"tool_calls": [...]}, or bare list
+    calls_list: list[dict] | None = None
+    if isinstance(data, dict):
+        for key in ("Tool Calls", "tool_calls", "toolCalls"):
+            val = data.get(key)
+            if isinstance(val, list):
+                calls_list = val
+                break
+        if calls_list is None:
+            return None
+    elif isinstance(data, list):
+        calls_list = data
+    else:
+        return None
+
+    if not calls_list:
+        return None
+
+    parsed: list[SimpleNamespace] = []
+    for entry in calls_list:
+        if not isinstance(entry, dict):
+            return None
+
+        func = entry.get("function")
+        if not isinstance(func, dict):
+            return None
+
+        name = func.get("name")
+        if not isinstance(name, str) or name not in valid_names:
+            return None
+
+        args = func.get("arguments", {})
+        if isinstance(args, dict):
+            args_str = json.dumps(args)
+        elif isinstance(args, str):
+            args_str = args
+        else:
+            return None
+
+        call_id = entry.get("id") or f"content_tc_{len(parsed)}"
+        parsed.append(
+            SimpleNamespace(
+                id=call_id,
+                function=SimpleNamespace(name=name, arguments=args_str),
+            )
+        )
+
+    return parsed if parsed else None
+
+
+# ---------------------------------------------------------------------------
 # ChatBrain
 # ---------------------------------------------------------------------------
 
@@ -431,10 +523,16 @@ class ChatBrain:
         tool schemas so the model cannot hallucinate tool calls.  Task-like
         messages get the full tool set.  If the model hallucinates an
         invalid tool name anyway, we strip tools and retry.
+
+        Some local models (Ollama / LiteLLM) return tool invocations as
+        serialised JSON in ``message.content`` instead of the structured
+        ``tool_calls`` field.  When that happens we parse the payload and
+        feed it into the same execution path so the tool actually runs.
         """
         self._messages.append({"role": "user", "content": user_message})
 
         use_tools = not _is_conversational(user_message)
+        _valid = frozenset(_TOOL_DISPATCH)
 
         for _ in range(_MAX_TOOL_ROUNDS):
             kwargs: dict[str, Any] = dict(
@@ -452,19 +550,47 @@ class ChatBrain:
             msg = choice.message
 
             tool_calls = getattr(msg, "tool_calls", None)
-            if not tool_calls:
+
+            # Fallback: detect tool calls serialised in plain-text content
+            content_tool_calls: list[SimpleNamespace] | None = None
+            if not tool_calls and use_tools and msg.content:
+                content_tool_calls = _try_parse_content_tool_calls(
+                    msg.content, _valid,
+                )
+
+            active_calls = tool_calls or content_tool_calls
+
+            if not active_calls:
                 text = msg.content or ""
                 self._messages.append({"role": "assistant", "content": text})
                 self._trim_history()
                 return text
 
-            if any(tc.function.name not in _TOOL_DISPATCH for tc in tool_calls):
+            if any(tc.function.name not in _TOOL_DISPATCH for tc in active_calls):
                 use_tools = False
                 continue
 
-            self._messages.append(msg.model_dump())
+            # Record the assistant turn in conversation history
+            if tool_calls:
+                self._messages.append(msg.model_dump())
+            else:
+                self._messages.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for tc in active_calls
+                    ],
+                })
 
-            for tc in tool_calls:
+            for tc in active_calls:
                 result = await self._execute_tool(tc)
                 self._messages.append({
                     "role": "tool",
