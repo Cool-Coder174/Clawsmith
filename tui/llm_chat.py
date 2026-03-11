@@ -21,6 +21,50 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _MAX_TOOL_ROUNDS = 6
 
 # ---------------------------------------------------------------------------
+# Lightweight conversational heuristic — keeps tools out of casual chat
+# ---------------------------------------------------------------------------
+
+_GREETING_WORDS = frozenset({
+    "hello", "hi", "hey", "howdy", "yo", "sup", "greetings",
+    "hola", "hiya", "heya", "morning", "afternoon", "evening",
+})
+_THANKS_WORDS = frozenset({"thanks", "thank", "thx", "cheers", "ty"})
+_CHAT_PHRASES = (
+    "what can you", "what do you do", "how can you help",
+    "what are you", "who are you", "how are you",
+    "how's it going", "what's up", "how do you",
+    "tell me about yourself", "nice to meet",
+    "good morning", "good afternoon", "good evening",
+)
+
+
+def _is_conversational(text: str) -> bool:
+    """Return True if *text* looks like casual chat rather than a real task."""
+    q = text.lower().strip()
+    words = q.split()
+    if not words:
+        return True
+    first = words[0].rstrip("!.,?;:")
+    if first in _GREETING_WORDS:
+        return True
+    if first in _THANKS_WORDS or any(
+        w.rstrip("!.,?;:") in _THANKS_WORDS for w in words
+    ):
+        return True
+    if any(p in q for p in _CHAT_PHRASES):
+        return True
+    if len(words) <= 4 and not any(
+        w.rstrip("!.,?;:") in {
+            "fix", "add", "create", "build", "run", "test", "audit",
+            "detect", "install", "delete", "remove", "deploy", "refactor",
+        }
+        for w in words
+    ):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
 
@@ -324,19 +368,26 @@ class ChatBrain:
     async def respond(self, user_message: str) -> str:
         """Send *user_message* to the LLM and return its final text reply.
 
-        If the LLM requests tool calls, they are executed and the results
-        fed back automatically (up to ``_MAX_TOOL_ROUNDS`` iterations).
+        Conversational messages (greetings, chitchat) are sent WITHOUT
+        tool schemas so the model cannot hallucinate tool calls.  Task-like
+        messages get the full tool set.  If the model hallucinates an
+        invalid tool name anyway, we strip tools and retry.
         """
         self._messages.append({"role": "user", "content": user_message})
 
+        use_tools = not _is_conversational(user_message)
+
         for _ in range(_MAX_TOOL_ROUNDS):
-            response = await litellm.acompletion(
+            kwargs: dict[str, Any] = dict(
                 model=self.model,
                 messages=self._messages,
-                tools=TOOLS,
                 max_tokens=2048,
                 temperature=0.3,
             )
+            if use_tools:
+                kwargs["tools"] = TOOLS
+
+            response = await litellm.acompletion(**kwargs)
 
             choice = response.choices[0]
             msg = choice.message
@@ -347,6 +398,10 @@ class ChatBrain:
                 self._messages.append({"role": "assistant", "content": text})
                 self._trim_history()
                 return text
+
+            if any(tc.function.name not in _TOOL_DISPATCH for tc in tool_calls):
+                use_tools = False
+                continue
 
             self._messages.append(msg.model_dump())
 
