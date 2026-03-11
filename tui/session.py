@@ -10,7 +10,7 @@ from rich.console import Console
 from tui.commands import CommandRouter
 from tui.models import ChatMessage, MessageRole, ThoughtPhase
 from tui.renderer import Renderer
-from tui.theme import CLAWSMITH_THEME
+from tui.theme import CLAWSMITH_THEME, SYM_ARROW, SYM_CHECK, SYM_CROSS
 from tui.thinking import ThoughtStream
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -74,6 +74,7 @@ class ChatSession:
         """Start the interactive session."""
         self.renderer.logo()
         self.renderer.welcome()
+        self._run_preflight()
 
         while self._running:
             try:
@@ -111,6 +112,96 @@ class ChatSession:
 
     def stop(self) -> None:
         self._running = False
+
+    # -- preflight --------------------------------------------------------
+
+    def _run_preflight(self) -> None:
+        """Check dependencies at startup and guide the user through repairs."""
+        from orchestrator.preflight import run_preflight, try_start_ollama
+
+        self.console.print("  [bold]Checking dependencies...[/bold]")
+        self.console.print()
+
+        result = run_preflight()
+
+        if result.config_ok:
+            self.console.print(
+                f"  [green]{SYM_CHECK}[/green] Config loaded"
+            )
+        if result.ollama_installed and result.ollama_reachable:
+            self.console.print(
+                f"  [green]{SYM_CHECK}[/green] Ollama running"
+            )
+        if result.has_api_keys:
+            self.console.print(
+                f"  [green]{SYM_CHECK}[/green] API keys configured"
+            )
+
+        for issue in result.issues:
+            if issue.severity == "error":
+                self.console.print(
+                    f"  [bold red]{SYM_CROSS}[/bold red] {issue.message}"
+                )
+            else:
+                self.console.print(
+                    f"  [yellow]![/yellow] {issue.message}"
+                )
+            if issue.repair_hint:
+                for line in issue.repair_hint.splitlines():
+                    self.console.print(
+                        f"    [dim]{SYM_ARROW} {line}[/dim]"
+                    )
+
+        if result.ollama_installed and not result.ollama_reachable:
+            self.console.print()
+            try:
+                answer = self.console.input(
+                    "  Start Ollama now? [bold]\\[Y/n][/bold] "
+                ).strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                answer = "n"
+
+            if answer in ("", "y", "yes"):
+                self.console.print(
+                    "  Starting Ollama...", style="muted"
+                )
+                if try_start_ollama():
+                    self.console.print(
+                        f"  [green]{SYM_CHECK}[/green] "
+                        "Ollama started (localhost:11434)"
+                    )
+                    result.ollama_reachable = True
+                    if "local_router" not in result.available_tiers:
+                        result.available_tiers.extend(
+                            ["local_router", "local_code"]
+                        )
+                    result.issues = [
+                        i for i in result.issues
+                        if i.component != "Ollama"
+                    ]
+                else:
+                    self.console.print(
+                        f"  [red]{SYM_CROSS}[/red] Could not start "
+                        "Ollama. Try running "
+                        "[bold]ollama serve[/bold] manually."
+                    )
+
+        self.console.print()
+
+        if result.available_tiers:
+            tiers = ", ".join(result.available_tiers)
+            self.console.print(
+                f"  [green]{SYM_CHECK}[/green] Ready — "
+                f"available tiers: [cyan]{tiers}[/cyan]"
+            )
+        elif not result.can_run_tasks:
+            self.console.print(
+                f"  [bold yellow]Warning:[/bold yellow] "
+                "No providers available. Slash commands still work "
+                "— try [bold]/help[/bold]"
+            )
+
+        self.renderer.separator()
 
     # -- routing ----------------------------------------------------------
 
