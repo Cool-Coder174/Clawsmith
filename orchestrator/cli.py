@@ -27,19 +27,69 @@ def cli() -> None:
 @click.option("--agent", default=None, help="Agent CLI id (cursor, claude_code, gemini_cli).")
 def run_task(task: str, repo_path: str, dry_run: bool, agent: str | None) -> None:
     """Run the full orchestration pipeline for a task."""
+    from rich.live import Live
+    from rich.text import Text
+
+    from orchestrator.agent_status import StatusTracker
     from orchestrator.logging_setup import setup_logging
     from orchestrator.pipeline import OrchestrationPipeline
 
     setup_logging()
-    result = asyncio.run(OrchestrationPipeline().run(task, repo_path, dry_run, agent_target=agent))
+    tracker = StatusTracker()
+
+    _LIFECYCLE = [
+        ("deployed", "Deploy"),
+        ("planning", "Plan"),
+        ("executing", "Execute"),
+        ("verifying", "Verify"),
+        ("complete", "Complete"),
+    ]
+    _PHASE_IDX = {k: i for i, (k, _) in enumerate(_LIFECYCLE)}
+
+    def _build_strip() -> Text:
+        phase = tracker.phase.value
+        failed = phase == "failed"
+        idx = _PHASE_IDX.get(phase, -1)
+        line = Text("  ")
+        for i, (key, label) in enumerate(_LIFECYCLE):
+            if i > 0:
+                line.append(" → ", style="dim")
+            if failed and key == phase:
+                line.append(f"[{label}]", style="bold red")
+            elif i < idx:
+                line.append(f"✓ {label}", style="green")
+            elif i == idx:
+                line.append(f"● {label}", style="bold cyan")
+            else:
+                line.append(f"○ {label}", style="dim")
+        latest = tracker.events[-1].step if tracker.events else ""
+        if latest:
+            line.append(f"  — {latest}", style="dim")
+        return line
+
+    with Live(_build_strip(), console=console, refresh_per_second=10, transient=True) as live:
+        tracker.on_status(lambda _ev: live.update(_build_strip()))
+
+        result = asyncio.run(
+            OrchestrationPipeline().run(
+                task, repo_path, dry_run, agent_target=agent, status=tracker,
+            )
+        )
+
+    # Final status strip (static)
+    console.print(_build_strip())
+    console.print()
 
     if result.success:
-        console.print("\n[bold green]Pipeline completed successfully[/bold green]")
+        console.print("[bold green]Pipeline completed successfully[/bold green]")
     else:
-        console.print(f"\n[bold red]Pipeline failed:[/bold red] {result.error_message}")
+        console.print(f"[bold red]Pipeline failed:[/bold red] {result.error_message}")
 
     console.print(f"  Duration: {result.duration_seconds:.2f}s")
     console.print(f"  Dry run:  {result.dry_run}")
+    if result.agent_status:
+        console.print(f"  Phase:    {result.agent_status.get('phase', 'unknown')}")
+        console.print(f"  Steps:    {result.agent_status.get('step_count', 0)}")
 
     if result.routing_decision:
         rd = result.routing_decision
@@ -56,6 +106,148 @@ def run_task(task: str, repo_path: str, dry_run: bool, agent: str | None) -> Non
             console.print(f"  Agent used: {er.agent_used}")
         if er.error_message:
             console.print(f"  Exec error: {er.error_message}")
+
+    if not result.success:
+        sys.exit(1)
+
+
+@cli.command("yolo")
+@click.option("--goal", required=True, help="High-level software engineering goal.")
+@click.option("--repo-path", default=".", help="Path to the repository root.")
+@click.option("--dry-run", is_flag=True, help="Skip provider dispatch and job execution.")
+@click.option("--agent", default=None, help="Agent CLI id (cursor, claude_code, gemini_cli).")
+@click.option("--max-retries", default=2, type=int, help="Max retries per phase on failure.")
+@click.option("--skip-planning", is_flag=True, help="Skip planning — go straight to execution.")
+@click.option(
+    "--no-pause", is_flag=True,
+    help="Abort on phase failure instead of pausing the queue.",
+)
+def yolo(
+    goal: str,
+    repo_path: str,
+    dry_run: bool,
+    agent: str | None,
+    max_retries: int,
+    skip_planning: bool,
+    no_pause: bool,
+) -> None:
+    """YOLO mode — autonomous multi-phase task execution."""
+    from rich.live import Live
+    from rich.text import Text
+
+    from orchestrator.agent_status import StatusTracker
+    from orchestrator.logging_setup import setup_logging
+    from orchestrator.schemas import YoloConfig
+    from orchestrator.yolo import YoloEngine
+
+    setup_logging()
+    tracker = StatusTracker()
+    cfg = YoloConfig(
+        skip_planning=skip_planning,
+        max_retries=max_retries,
+        dry_run=dry_run,
+        agent_target=agent,
+        pause_on_failure=not no_pause,
+    )
+
+    _LIFECYCLE = [
+        ("deployed", "Deploy"),
+        ("decomposing", "Decompose"),
+        ("planning", "Plan"),
+        ("queued", "Queue"),
+        ("executing", "Execute"),
+        ("verifying", "Verify"),
+        ("complete", "Complete"),
+    ]
+    _PHASE_IDX = {k: i for i, (k, _) in enumerate(_LIFECYCLE)}
+
+    def _build_strip() -> Text:
+        phase = tracker.phase.value
+        failed = phase == "failed"
+        retrying = phase == "retrying"
+        idx = _PHASE_IDX.get(phase, -1)
+        if retrying:
+            idx = _PHASE_IDX.get("executing", -1)
+        line = Text("  ")
+        for i, (key, label) in enumerate(_LIFECYCLE):
+            if i > 0:
+                line.append(" → ", style="dim")
+            if failed and i == idx:
+                line.append(f"[{label}]", style="bold red")
+            elif i < idx:
+                line.append(f"✓ {label}", style="green")
+            elif i == idx:
+                style = "bold yellow" if retrying else "bold cyan"
+                line.append(f"● {label}", style=style)
+            else:
+                line.append(f"○ {label}", style="dim")
+
+        yolo_meta = tracker._yolo_meta
+        if yolo_meta:
+            cur = yolo_meta.get("yolo_current_phase", "")
+            tot = yolo_meta.get("yolo_total_phases", "")
+            title = yolo_meta.get("yolo_phase_title", "")
+            attempt = yolo_meta.get("yolo_attempt", 1)
+            suffix = f" (retry {attempt})" if attempt > 1 else ""
+            line.append(f"  — Phase {cur}/{tot}: {title}{suffix}", style="dim")
+        elif tracker.events:
+            line.append(f"  — {tracker.events[-1].step}", style="dim")
+        return line
+
+    console.print()
+    console.print(Panel(f"[bold cyan]YOLO Mode[/bold cyan]  {goal}", expand=False))
+    console.print()
+
+    with Live(_build_strip(), console=console, refresh_per_second=10, transient=True) as live:
+        tracker.on_status(lambda _ev: live.update(_build_strip()))
+
+        result = asyncio.run(
+            YoloEngine().execute(goal, repo_path, config=cfg, status=tracker)
+        )
+
+    console.print(_build_strip())
+    console.print()
+
+    if result.phase_results:
+        table = Table(title="Phase Results", show_lines=True)
+        table.add_column("#", style="dim", width=3)
+        table.add_column("Phase", style="cyan", min_width=20)
+        table.add_column("Status", min_width=10)
+        table.add_column("Attempts", width=8)
+        table.add_column("Duration", width=10)
+        table.add_column("Error", min_width=30)
+
+        for pr in result.phase_results:
+            status_style = {
+                "completed": "green",
+                "failed": "bold red",
+                "skipped": "dim",
+                "paused": "yellow",
+            }.get(pr.status.value, "white")
+            err_text = pr.error_history[-1][:60] if pr.error_history else ""
+            table.add_row(
+                str(pr.phase_index + 1),
+                pr.title,
+                f"[{status_style}]{pr.status.value}[/{status_style}]",
+                str(pr.attempts),
+                f"{pr.duration_seconds:.1f}s",
+                err_text,
+            )
+        console.print(table)
+        console.print()
+
+    if result.success:
+        console.print("[bold green]YOLO run completed successfully[/bold green]")
+    else:
+        console.print(f"[bold red]YOLO run failed:[/bold red] {result.error_message}")
+
+    console.print(f"  Duration:   {result.duration_seconds:.2f}s")
+    console.print(f"  Phases:     {result.completed_phases}/{result.total_phases} completed")
+    if result.failed_phases:
+        console.print(f"  Failed:     {result.failed_phases}")
+    if result.skipped_phases:
+        console.print(f"  Skipped:    {result.skipped_phases}")
+    console.print(f"  Dry run:    {cfg.dry_run}")
 
     if not result.success:
         sys.exit(1)

@@ -66,6 +66,17 @@ CLAWSMITH_THEME = Theme(
         "phase.tool_call": "bright_magenta",
         "phase.complete": "bold green",
         "phase.error": "bold red",
+        # Agent lifecycle phases
+        "phase.deployed": "bold cyan",
+        "phase.decomposing": "bold bright_cyan",
+        "phase.queued": "dim cyan",
+        "phase.verifying": "bold magenta",
+        "phase.retrying": "bold yellow",
+        "phase.verify_build": "magenta",
+        "phase.verify_compile": "magenta",
+        "phase.verify_fix": "yellow",
+        "phase.verify_conflicts": "yellow",
+        "phase.failed": "bold red",
         "success": "bold green",
         "error": "bold red",
         "warning": "yellow",
@@ -73,6 +84,11 @@ CLAWSMITH_THEME = Theme(
         "separator": "dim cyan",
         "prompt.symbol": "bold bright_white",
         "hint": "dim italic",
+        # Status bar
+        "status.phase": "bold cyan",
+        "status.active": "bold green",
+        "status.pending": "dim",
+        "status.done": "green",
     }
 )
 
@@ -107,6 +123,17 @@ PHASE_LABELS: dict[str, str] = {
     "tool_call": "Tool",
     "complete": "Done",
     "error": "Error",
+    # Agent lifecycle
+    "deployed": "Agent Deployed",
+    "decomposing": "Decomposing",
+    "queued": "Queued",
+    "verifying": "Verifying",
+    "retrying": "Retrying",
+    "verify_build": "Build",
+    "verify_compile": "Compile Check",
+    "verify_fix": "Fix Errors",
+    "verify_conflicts": "Resolve Conflicts",
+    "failed": "Failed",
 }
 
 PHASE_ICONS: dict[str, str] = {
@@ -118,4 +145,34 @@ PHASE_ICONS: dict[str, str] = {
     "tool_call": "*" if not _U else "⚡",
     "complete": "+" if not _U else "✓",
     "error": "x" if not _U else "✗",
+    # Agent lifecycle
+    "deployed": ">" if not _U else "🚀",
+    "decomposing": "~" if not _U else "🔬",
+    "queued": "~" if not _U else "📋",
+    "verifying": "~" if not _U else "🔍",
+    "retrying": "!" if not _U else "🔄",
+    "verify_build": "~" if not _U else "🔨",
+    "verify_compile": "~" if not _U else "⚙️",
+    "verify_fix": "!" if not _U else "🔧",
+    "verify_conflicts": "!" if not _U else "🔀",
+    "failed": "x" if not _U else "✗",
 }
+
+# Lifecycle progress bar segments for the status strip (single-pipeline)
+LIFECYCLE_PHASES: list[tuple[str, str]] = [
+    ("deployed", "Deploy"),
+    ("planning", "Plan"),
+    ("executing", "Execute"),
+    ("verifying", "Verify"),
+    ("complete", "Complete"),
+]
+
+# YOLO mode lifecycle strip (multi-phase)
+YOLO_LIFECYCLE_PHASES: list[tuple[str, str]] = [
+    ("deployed", "Deploy"),
+    ("decomposing", "Decompose"),
+    ("queued", "Queue"),
+    ("executing", "Execute"),
+    ("verifying", "Verify"),
+    ("complete", "Complete"),
+]

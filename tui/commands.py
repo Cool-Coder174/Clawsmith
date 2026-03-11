@@ -73,6 +73,7 @@ class CommandRouter:
         self.register("doctor", _cmd_doctor, "Run preflight checks")
         self.register("scope", _cmd_scope, "View scope contracts")
         self.register("agents", _cmd_agents, "List detected agent CLIs")
+        self.register("yolo", _cmd_yolo, "YOLO mode — autonomous multi-phase execution")
 
 
 # -----------------------------------------------------------------------
@@ -283,7 +284,20 @@ def _cmd_status(session: ChatSession, _args: list[str]) -> None:
         ("Messages", str(len(session.history))),
         ("Version", "0.1.0"),
     ]
-    session.renderer.key_value_table("Session", rows)
+
+    status = getattr(session, "last_agent_status", None)
+    if status:
+        rows.append(("Agent Phase", status.get("phase", "unknown")))
+        if status.get("verify_stage"):
+            rows.append(("Verify Stage", status["verify_stage"]))
+        rows.append(("Pipeline Steps", str(status.get("step_count", 0))))
+        rows.append(("Last Step", status.get("latest_step", "")))
+        rows.append(("Elapsed", f"{status.get('elapsed_seconds', 0):.1f}s"))
+        rows.append(("Terminal", "Yes" if status.get("is_terminal") else "No"))
+    else:
+        rows.append(("Agent Status", "No pipeline run yet"))
+
+    session.renderer.key_value_table("Session & Agent Status", rows)
 
 
 def _cmd_memory(session: ChatSession, _args: list[str]) -> None:
@@ -375,3 +389,75 @@ def _cmd_agents(session: ChatSession, _args: list[str]) -> None:
         session.renderer.ranked_table("Detected Agents", columns, rows)
     except Exception as exc:
         session.renderer.error_message(f"Agent scan failed: {exc}")
+
+
+def _cmd_yolo(session: ChatSession, args: list[str]) -> None:
+    """Run YOLO mode — autonomous multi-phase execution."""
+    import asyncio
+
+    from tui.thinking import ThoughtStream
+
+    goal = " ".join(args).strip() if args else ""
+    if not goal:
+        session.renderer.error_message(
+            "Usage: /yolo <goal>\n"
+            "Example: /yolo Add user authentication with JWT"
+        )
+        return
+
+    from orchestrator.agent_status import StatusTracker
+    from orchestrator.yolo import YoloEngine
+
+    tracker = StatusTracker()
+
+    with ThoughtStream(session.renderer.console, tracker=tracker) as ts:
+        try:
+            result = asyncio.run(
+                YoloEngine().execute(
+                    goal,
+                    str(session.repo_path),
+                    status=tracker,
+                )
+            )
+        except Exception as exc:
+            ts.emit(ThoughtPhase.error, str(exc))
+            session.renderer.error_message(f"YOLO failed: {exc}")
+            return
+
+    session.last_agent_status = result.agent_status or tracker.summary()
+
+    if result.success:
+        parts = [
+            f"YOLO run **completed** in {result.duration_seconds:.1f}s.\n",
+            f"- Phases: **{result.completed_phases}/{result.total_phases}** completed",
+        ]
+        if result.agent_status:
+            phase = result.agent_status.get("phase", "unknown")
+            parts.append(f"- Final status: **{phase}**")
+        session.renderer.agent_message("\n".join(parts))
+    else:
+        parts = [
+            f"YOLO run **failed** after {result.duration_seconds:.1f}s.\n",
+            f"- Completed: {result.completed_phases}/{result.total_phases}",
+            f"- Failed: {result.failed_phases}",
+        ]
+        if result.error_message:
+            parts.append(f"- Error: {result.error_message}")
+        session.renderer.agent_message("\n".join(parts))
+
+    if result.phase_results:
+        columns = [
+            ("#", "dim"),
+            ("Phase", "brand"),
+            ("Status", ""),
+            ("Attempts", ""),
+        ]
+        rows: list[list[str]] = []
+        for pr in result.phase_results:
+            rows.append([
+                str(pr.phase_index + 1),
+                pr.title,
+                pr.status.value,
+                str(pr.attempts),
+            ])
+        session.renderer.ranked_table("Phase Summary", columns, rows)

@@ -102,8 +102,12 @@ Current working directory: {repo_path}
 - Execute a full coding task pipeline
 
 Your available tools are EXACTLY: repo_audit, repo_map, detect_agents, \
-run_build, run_tests, run_task_pipeline. There are NO other tools. \
+run_build, run_tests, run_task_pipeline, run_yolo. There are NO other tools. \
 Do NOT invent tool names or call anything not in that list.
+
+Use **run_yolo** for complex, multi-step goals that benefit from autonomous \
+phase decomposition (e.g. "Add user auth with JWT", "Refactor the database layer"). \
+Use **run_task_pipeline** for simpler, single-step tasks.
 
 ## After using a tool
 - Summarise the result in a concise, helpful way.
@@ -228,6 +232,32 @@ TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_yolo",
+            "description": (
+                "YOLO mode — autonomous multi-phase task execution. "
+                "Decomposes a complex goal into phases, plans each one, "
+                "executes them in order via the pipeline, verifies results, "
+                "and retries on failure. Use this for large, multi-step goals."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "goal": {
+                        "type": "string",
+                        "description": "A high-level software engineering goal.",
+                    },
+                    "repo_path": {
+                        "type": "string",
+                        "description": "Absolute path to the repository root.",
+                    },
+                },
+                "required": ["goal", "repo_path"],
+            },
+        },
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -314,13 +344,20 @@ async def _tool_run_tests(repo_path: str) -> str:
 
 
 async def _tool_run_task_pipeline(task_description: str, repo_path: str) -> str:
+    from orchestrator.agent_status import StatusTracker
     from orchestrator.pipeline import OrchestrationPipeline
 
+    tracker = StatusTracker()
     result = await OrchestrationPipeline().run(
-        task_description, repo_path, dry_run=False,
+        task_description, repo_path, dry_run=False, status=tracker,
     )
     parts = [f"success: {result.success}"]
     parts.append(f"duration: {result.duration_seconds:.1f}s")
+    if result.agent_status:
+        parts.append(f"agent_phase: {result.agent_status.get('phase', 'unknown')}")
+        parts.append(f"agent_steps: {result.agent_status.get('step_count', 0)}")
+        if result.agent_status.get("verify_stage"):
+            parts.append(f"verify_stage: {result.agent_status['verify_stage']}")
     if result.routing_decision:
         rd = result.routing_decision
         parts.append(f"tier: {rd.selected_tier.value} ({rd.model_name})")
@@ -334,6 +371,27 @@ async def _tool_run_task_pipeline(task_description: str, repo_path: str) -> str:
     return "\n".join(parts)
 
 
+async def _tool_run_yolo(goal: str, repo_path: str) -> str:
+    from orchestrator.agent_status import StatusTracker
+    from orchestrator.yolo import YoloEngine
+
+    tracker = StatusTracker()
+    result = await YoloEngine().execute(goal, repo_path, status=tracker)
+    parts = [f"success: {result.success}"]
+    parts.append(f"duration: {result.duration_seconds:.1f}s")
+    parts.append(f"phases: {result.completed_phases}/{result.total_phases}")
+    if result.failed_phases:
+        parts.append(f"failed: {result.failed_phases}")
+    if result.agent_status:
+        parts.append(f"phase: {result.agent_status.get('phase', 'unknown')}")
+    if result.phase_results:
+        for pr in result.phase_results:
+            parts.append(f"  [{pr.phase_index + 1}] {pr.title}: {pr.status.value}")
+    if result.error_message:
+        parts.append(f"error: {result.error_message}")
+    return "\n".join(parts)
+
+
 _TOOL_DISPATCH: dict[str, Any] = {
     "repo_audit": _tool_repo_audit,
     "repo_map": _tool_repo_map,
@@ -341,6 +399,7 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "run_build": _tool_run_build,
     "run_tests": _tool_run_tests,
     "run_task_pipeline": _tool_run_task_pipeline,
+    "run_yolo": _tool_run_yolo,
 }
 
 # ---------------------------------------------------------------------------

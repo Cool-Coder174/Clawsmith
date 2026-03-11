@@ -47,6 +47,11 @@ _INTENT_KEYWORDS: dict[str, list[str]] = {
     "link": [
         "link repo", "add repo", "workspace graph",
     ],
+    "yolo": [
+        "yolo", "autonomous", "auto execute", "auto run",
+        "run everything", "do everything", "full pipeline",
+        "just do it", "run all phases",
+    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -179,6 +184,7 @@ class ChatSession:
         self.repo_path = Path(repo_path).resolve()
         self._running = True
         self._brain: object | None = None  # set after preflight
+        self.last_agent_status: dict | None = None  # last pipeline agent_status snapshot
 
     # -- main loop --------------------------------------------------------
 
@@ -839,55 +845,38 @@ def _handle_task(
     session: ChatSession, query: str,
 ) -> tuple[str, list]:
     """Run the full orchestration pipeline for a genuine coding task."""
+    from orchestrator.agent_status import StatusTracker
     from orchestrator.pipeline import OrchestrationPipeline
 
+    tracker = StatusTracker()
     events = []
-    with ThoughtStream(session.renderer.console) as ts:
-        ts.emit(ThoughtPhase.analyzing, "Parsing task intent")
-        ts.emit(
-            ThoughtPhase.analyzing,
-            f"Repository: {session.repo_path.name}",
-        )
-        ts.emit(ThoughtPhase.routing, "Running orchestration pipeline")
-        events = ts.events
 
+    with ThoughtStream(session.renderer.console, tracker=tracker) as ts:
         try:
             result = asyncio.run(
                 OrchestrationPipeline().run(
                     query,
                     str(session.repo_path),
                     dry_run=False,
+                    status=tracker,
                 )
             )
         except Exception as exc:
             ts.emit(ThoughtPhase.error, str(exc))
             return f"Pipeline error: {exc}", ts.events
 
-        if result.routing_decision:
-            rd = result.routing_decision
-            ts.emit(
-                ThoughtPhase.routing,
-                f"Tier: {rd.selected_tier.value} "
-                f"({rd.model_name})",
-            )
-        if result.execution_result:
-            er = result.execution_result
-            ts.emit(
-                ThoughtPhase.executing,
-                f"Exit code: {er.exit_code}",
-            )
-        status = "completed" if result.success else "failed"
-        ts.emit(
-            ThoughtPhase.complete if result.success else ThoughtPhase.error,
-            f"Pipeline {status} in {result.duration_seconds:.1f}s",
-        )
         events = ts.events
+
+    session.last_agent_status = result.agent_status or tracker.summary()
 
     if result.success:
         parts = [
             f"Pipeline **completed** in "
             f"{result.duration_seconds:.1f}s.\n",
         ]
+        if result.agent_status:
+            phase = result.agent_status.get("phase", "unknown")
+            parts.append(f"- Agent status: **{phase}**")
         if result.routing_decision:
             rd = result.routing_decision
             parts.append(
@@ -905,6 +894,59 @@ def _handle_task(
     return f"Pipeline failed: {result.error_message}", events
 
 
+def _handle_yolo(
+    session: ChatSession, query: str,
+) -> tuple[str, list]:
+    """Run YOLO mode — autonomous multi-phase execution."""
+    from orchestrator.agent_status import StatusTracker
+    from orchestrator.yolo import YoloEngine
+
+    tracker = StatusTracker()
+    events = []
+
+    with ThoughtStream(session.renderer.console, tracker=tracker) as ts:
+        try:
+            result = asyncio.run(
+                YoloEngine().execute(
+                    query,
+                    str(session.repo_path),
+                    status=tracker,
+                )
+            )
+        except Exception as exc:
+            ts.emit(ThoughtPhase.error, str(exc))
+            return f"YOLO error: {exc}", ts.events
+
+        events = ts.events
+
+    session.last_agent_status = result.agent_status or tracker.summary()
+
+    if result.success:
+        parts = [
+            f"YOLO run **completed** in {result.duration_seconds:.1f}s.\n",
+            f"- Phases: **{result.completed_phases}/{result.total_phases}** completed",
+        ]
+        if result.agent_status:
+            phase = result.agent_status.get("phase", "unknown")
+            parts.append(f"- Final status: **{phase}**")
+
+        if result.phase_results:
+            parts.append("\n**Phase breakdown:**")
+            for pr in result.phase_results:
+                icon = "✓" if pr.status.value == "completed" else "✗"
+                parts.append(f"  {icon} {pr.title} ({pr.status.value})")
+
+        return "\n".join(parts), events
+
+    parts = [
+        f"YOLO run **failed** after {result.duration_seconds:.1f}s.",
+        f"- Completed: {result.completed_phases}/{result.total_phases}",
+    ]
+    if result.error_message:
+        parts.append(f"- Error: {result.error_message}")
+    return "\n".join(parts), events
+
+
 _INTENT_HANDLERS: dict[str, object] = {
     "detect": _handle_detect,
     "recommend": _handle_recommend,
@@ -913,6 +955,7 @@ _INTENT_HANDLERS: dict[str, object] = {
     "install": _handle_install,
     "link": _handle_link,
     "scope": _handle_scope,
+    "yolo": _handle_yolo,
     "conversation": _handle_conversation,
     "task": _handle_task,
 }

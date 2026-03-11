@@ -24,6 +24,18 @@ class ThoughtPhase(StrEnum):
     complete = "complete"
     error = "error"
 
+    # Agent lifecycle phases (mirrors orchestrator.agent_status.AgentPhase)
+    deployed = "deployed"
+    decomposing = "decomposing"
+    queued = "queued"
+    verifying = "verifying"
+    retrying = "retrying"
+    verify_build = "verify_build"
+    verify_compile = "verify_compile"
+    verify_fix = "verify_fix"
+    verify_conflicts = "verify_conflicts"
+    failed = "failed"
+
 
 class ThoughtEvent(BaseModel):
     """A single step in the agent's visible reasoning chain."""
