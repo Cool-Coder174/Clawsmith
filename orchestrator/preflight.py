@@ -267,10 +267,21 @@ def start_mcp_server_background() -> threading.Thread | None:
         return None
 
     def _serve() -> None:
+        import logging
+
+        for name in ("uvicorn", "uvicorn.access", "uvicorn.error",
+                      "fastmcp", "httpx", "httpcore"):
+            logging.getLogger(name).setLevel(logging.WARNING)
+
         try:
+            import io
+            import contextlib
+
             from mcp_server.server import mcp as mcp_app
 
-            mcp_app.run(transport="sse", host=host, port=port)
+            with contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                mcp_app.run(transport="sse", host=host, port=port)
         except Exception:
             pass
 

@@ -164,6 +164,7 @@ class ChatSession:
         self.history: list[ChatMessage] = []
         self.repo_path = Path(repo_path).resolve()
         self._running = True
+        self._brain: object | None = None  # set after preflight
 
     # -- main loop --------------------------------------------------------
 
@@ -302,15 +303,53 @@ class ChatSession:
                 "— try [bold]/help[/bold]"
             )
 
+        if result.ollama_reachable:
+            try:
+                from tui.llm_chat import ChatBrain
+
+                self._brain = ChatBrain(self.repo_path)
+                self.console.print(
+                    f"  [green]{SYM_CHECK}[/green] "
+                    "LLM chat ready (local model)"
+                )
+            except Exception:
+                pass
+
         self.renderer.separator()
 
     # -- routing ----------------------------------------------------------
 
     def _execute(self, query: str) -> tuple[str, list]:
         """Route *query* to the right subsystem and return (response, thoughts)."""
+        if self._brain is not None:
+            return self._execute_via_brain(query)
+
         intent = _detect_intent(query)
         handler = _INTENT_HANDLERS.get(intent, _handle_task)
         return handler(self, query)
+
+    def _execute_via_brain(self, query: str) -> tuple[str, list]:
+        """Send *query* to the LLM chat brain with a live thinking indicator."""
+        from tui.llm_chat import ChatBrain
+
+        brain: ChatBrain = self._brain  # type: ignore[assignment]
+        events: list = []
+
+        with ThoughtStream(self.renderer.console) as ts:
+            ts.emit(ThoughtPhase.analyzing, "Thinking...")
+            try:
+                response = asyncio.run(brain.respond(query))
+            except Exception as exc:
+                ts.emit(ThoughtPhase.error, str(exc))
+                return (
+                    f"LLM error: {exc}\n\n"
+                    "Falling back to built-in handler.",
+                    ts.events,
+                )
+            ts.emit(ThoughtPhase.complete, "Done")
+            events = ts.events
+
+        return response, events
 
 
 # -----------------------------------------------------------------------
