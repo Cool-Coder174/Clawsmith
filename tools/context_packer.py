@@ -1,3 +1,10 @@
+"""Context packer — assembles a token-budgeted context packet for LLM prompts.
+
+Combines the audit report, repo map, and file contents into a single
+``ContextPacket`` that fits within the configured token budget.  Files are
+prioritized by relevance to the task description and truncated if necessary.
+"""
+
 from __future__ import annotations
 
 import os
@@ -10,6 +17,7 @@ from tools.repo_mapper import RepoMap
 
 
 class ContextPacker:
+    """Packs repository context into a token-limited payload for the LLM."""
     def __init__(self, root_path: Path, token_budget: int = 8000) -> None:
         self.root_path = root_path
         self.token_budget = token_budget
@@ -22,6 +30,7 @@ class ContextPacker:
         file_list: list[str] | None = None,
         recent_errors: list[str] | None = None,
     ) -> ContextPacket:
+        """Build a ``ContextPacket`` from the audit, map, and task description."""
         architecture_summary = self._build_architecture_summary(audit)
         build_test_commands = self._build_command_strings()
         selected_files = self._select_relevant_files(file_list, audit, repo_map, task_description)

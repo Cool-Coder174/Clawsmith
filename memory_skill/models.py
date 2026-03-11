@@ -1,3 +1,5 @@
+"""Data models for the persistent memory subsystem."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, Field

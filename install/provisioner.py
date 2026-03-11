@@ -1,3 +1,10 @@
+"""Model provisioner — downloads, verifies, and registers local LLMs.
+
+Orchestrates the full install flow: resolve download URL, fetch the model
+file (with checksum verification), register it with the local runtime
+(Ollama, llama.cpp), and record the installation in the manifest.
+"""
+
 from __future__ import annotations
 
 import json

@@ -1,3 +1,11 @@
+"""Repository mapper — generates a directory-tree view with entrypoints and important files.
+
+Produces a ``RepoMap`` containing a tree string (for human readability),
+lists of entrypoints (e.g. ``main.py``, ``index.ts``) and important files
+(e.g. ``README.md``, ``Dockerfile``) that the context packer uses to
+prioritize which files to include in the LLM prompt.
+"""
+
 from __future__ import annotations
 
 import fnmatch

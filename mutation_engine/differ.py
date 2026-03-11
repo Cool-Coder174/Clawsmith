@@ -1,3 +1,5 @@
+"""Diff generator — produces unified diffs for staged mutation proposals."""
+
 from __future__ import annotations
 
 import difflib

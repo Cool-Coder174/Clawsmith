@@ -1,3 +1,10 @@
+"""Memory writer — persists learned project context (stack, preferences, decisions) to disk.
+
+When ClawSmith learns something about a project — detected frameworks,
+user preferences, architectural decisions — the writer serializes it
+into the memory directory so it's available in future sessions.
+"""
+
 from __future__ import annotations
 
 import json

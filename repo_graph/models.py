@@ -1,3 +1,5 @@
+"""Data models for the cross-repo workspace graph."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, Field

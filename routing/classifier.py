@@ -1,9 +1,17 @@
+"""Task classifier — scores complexity, ambiguity, and severity of incoming tasks.
+
+The classifier uses keyword heuristics to determine the task type (bugfix,
+refactor, implementation, etc.) and produces a weighted complexity score that
+the ``ModelRouter`` uses to select the cheapest capable model tier.
+"""
+
 from __future__ import annotations
 
 import re
 
 from orchestrator.schemas import ContextPacket, TaskClassification, TaskType
 
+# Each entry maps a TaskType to trigger keywords found in the user's description.
 _TASK_TYPE_KEYWORDS: list[tuple[TaskType, list[str]]] = [
     (TaskType.audit, ["audit", "inspect", "scan", "review"]),
     (TaskType.refactor, ["refactor", "restructure", "reorganize", "clean up"]),
@@ -16,30 +24,41 @@ _TASK_TYPE_KEYWORDS: list[tuple[TaskType, list[str]]] = [
     (TaskType.prompt_polish, ["polish", "refine prompt", "improve prompt"]),
 ]
 
+# Words that signal the user isn't sure what they want — raises ambiguity score.
 _AMBIGUITY_MARKERS = [
     "maybe", "possibly", "not sure", "unclear", "might",
     "could", "somehow", "figure out", "investigate",
 ]
 
+# Words that suggest broad structural changes — raises architectural impact.
 _HIGH_IMPACT_KEYWORDS = [
     "refactor", "migrate", "redesign", "overhaul", "rewrite",
     "restructure", "replace", "extract", "split", "merge",
 ]
 
+# Words indicating production-critical urgency — can override to premium tier.
 _SEVERITY_MARKERS = [
     "broken", "crash", "critical", "production", "outage",
     "data loss", "security", "urgent", "blocker",
 ]
 
+# Regex to extract file paths mentioned in the task description.
 _FILE_PATH_RE = re.compile(r"[\w/\\.-]+\.\w{1,6}")
 
 
 class TaskClassifier:
+    """Analyzes a task description to produce a complexity classification.
+
+    The classification feeds into ``ModelRouter`` to decide whether the
+    task can be handled locally or needs a premium cloud model.
+    """
+
     def classify(
         self,
         task_description: str,
         context: ContextPacket | None = None,
     ) -> TaskClassification:
+        """Return a ``TaskClassification`` with complexity, ambiguity, and severity scores."""
         lower = task_description.lower()
 
         task_type = self._detect_task_type(lower)
@@ -54,6 +73,8 @@ class TaskClassifier:
             else int(len(task_description.split()) / 0.75)
         )
 
+        # Weighted blend: files touched (30%), ambiguity (25%),
+        # architectural impact (25%), severity (20%).
         complexity_score = min(
             1.0,
             max(

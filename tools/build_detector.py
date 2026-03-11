@@ -1,3 +1,10 @@
+"""Build detector — auto-discovers build, test, lint, and install commands for a repo.
+
+Inspects marker files (``pyproject.toml``, ``package.json``, ``Cargo.toml``,
+etc.) and emits a list of ``BuildCommand`` objects that the context packer
+and MCP server use to generate acceptance criteria and run builds/tests.
+"""
+
 from __future__ import annotations
 
 import json

@@ -1,3 +1,9 @@
+"""Repository linker — manages adding and removing repos in the workspace graph.
+
+Provides the ``link-repo`` and ``unlink-repo`` CLI actions, persisting the
+workspace graph to disk so that cross-repo context is available across runs.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

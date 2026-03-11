@@ -1,3 +1,5 @@
+"""Model downloader — fetches model files with progress, resume, and checksum support."""
+
 from __future__ import annotations
 
 import asyncio

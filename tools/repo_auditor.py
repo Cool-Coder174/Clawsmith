@@ -1,3 +1,10 @@
+"""Repository auditor — scans a repo to detect languages, frameworks, and tooling.
+
+The audit report feeds into the ``ContextPacker`` and ``ModelRouter`` so
+that ClawSmith can tailor prompts and routing decisions to the actual
+project stack (e.g. pytest for Python, jest for Node, Cargo for Rust).
+"""
+
 from __future__ import annotations
 
 import json
@@ -35,6 +42,8 @@ _LINTER_CONFIGS = [
 
 
 class AuditReport(BaseModel):
+    """Structured snapshot of a repository's tech stack and tooling."""
+
     languages: dict[str, int] = Field(default_factory=dict)
     frameworks: list[str] = Field(default_factory=list)
     package_managers: list[str] = Field(default_factory=list)
@@ -47,10 +56,13 @@ class AuditReport(BaseModel):
 
 
 class RepoAuditor:
+    """Walks a repository tree and identifies its languages, build systems, and CI setup."""
+
     def __init__(self, root_path: Path) -> None:
         self.root_path = root_path
 
     def audit(self) -> AuditReport:
+        """Run the full audit and return an ``AuditReport``."""
         languages = self._detect_languages()
         marker_files = self._detect_marker_files()
         frameworks = self._detect_frameworks(marker_files)

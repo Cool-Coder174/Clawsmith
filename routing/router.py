@@ -1,8 +1,16 @@
+"""Model router — maps a task classification to the cheapest capable model tier.
+
+Thresholds are loaded from ``config/settings.yaml``.  High ambiguity or
+critical severity can bump the selected tier upward so that harder tasks
+automatically escalate to more capable (and more expensive) models.
+"""
+
 from __future__ import annotations
 
 from config.config_loader import get_config
 from orchestrator.schemas import ModelTier, RoutingDecision, TaskClassification
 
+# Tier escalation ladder: local_router → local_code → premium.
 _TIER_ORDER = [ModelTier.local_router, ModelTier.local_code, ModelTier.premium]
 
 
@@ -13,12 +21,20 @@ def _bump_tier(tier: ModelTier) -> ModelTier:
 
 
 class ModelRouter:
+    """Selects a model tier and concrete model name for a classified task.
+
+    The router compares the task's complexity score against configurable
+    thresholds, then optionally bumps the tier if ambiguity is high or
+    failure severity is critical.
+    """
+
     def __init__(self) -> None:
         config = get_config()
         self.routing_config = config.routing
         self.models_config = config.models
 
     def route_task(self, classification: TaskClassification) -> RoutingDecision:
+        """Return a ``RoutingDecision`` with the selected tier, model, and reasoning."""
         low = self.routing_config.low_complexity_threshold
         high = self.routing_config.high_complexity_threshold
         ambiguity_bump = self.routing_config.ambiguity_bump_threshold

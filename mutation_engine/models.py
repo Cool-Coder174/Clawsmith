@@ -1,3 +1,5 @@
+"""Data models for the guarded mutation pipeline (propose → stage → apply → rollback)."""
+
 from __future__ import annotations
 
 from datetime import datetime

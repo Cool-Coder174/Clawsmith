@@ -1,3 +1,5 @@
+"""Memory reader — loads persisted project memory from disk into typed models."""
+
 from __future__ import annotations
 
 import json

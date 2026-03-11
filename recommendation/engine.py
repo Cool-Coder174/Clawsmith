@@ -1,3 +1,10 @@
+"""Recommendation engine — suggests local LLMs that fit the user's hardware.
+
+Filters the model catalog by available VRAM/RAM, ranks candidates by
+fitness, and returns an ordered list so the user can install the best
+model for their machine without manual research.
+"""
+
 from __future__ import annotations
 
 import re

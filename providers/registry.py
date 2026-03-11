@@ -1,3 +1,11 @@
+"""Provider registry — lazily creates one LLM provider per model tier.
+
+The registry is a singleton: ``get_registry()`` returns the same instance
+for the lifetime of the process.  Each tier (local_router, local_code,
+premium, prompt_polisher) gets its own ``LiteLLMProvider`` instance
+configured from ``settings.yaml``.
+"""
+
 from __future__ import annotations
 
 from config.config_loader import get_config
@@ -8,6 +16,7 @@ _TIER_NAMES = ("local_router", "local_code", "premium", "prompt_polisher")
 
 
 class ProviderRegistry:
+    """Maps tier names to configured ``ModelProvider`` instances."""
     def __init__(self) -> None:
         config = get_config()
         self._providers: dict[str, ModelProvider] = {}
@@ -16,6 +25,7 @@ class ProviderRegistry:
             self._providers[tier] = LiteLLMProvider(model_cfg)
 
     def get_provider(self, tier: str) -> ModelProvider:
+        """Return the provider for a given tier, raising ``KeyError`` if unknown."""
         if tier not in self._providers:
             valid = ", ".join(self._providers)
             raise KeyError(

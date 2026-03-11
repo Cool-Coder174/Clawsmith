@@ -1,3 +1,10 @@
+"""Scope engine — creates and enforces scope contracts for tasks.
+
+A scope contract limits which files, directories, and repos a task is
+allowed to read or modify.  This prevents accidental cross-repo writes
+and supports read-only external-repo access for multi-repo workflows.
+"""
+
 from __future__ import annotations
 
 import fnmatch

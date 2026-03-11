@@ -1,3 +1,10 @@
+"""Workspace scanner — discovers repos and maps cross-repo dependency edges.
+
+Scans a workspace directory for repositories, reads their dependency
+manifests (``pyproject.toml``, ``package.json``, ``go.mod``, etc.), and
+builds a directed dependency graph between discovered projects.
+"""
+
 from __future__ import annotations
 
 import configparser

@@ -1,3 +1,11 @@
+"""LiteLLM provider — routes completions through the litellm library.
+
+LiteLLM abstracts 100+ LLM APIs behind a single ``acompletion`` call,
+so ClawSmith can target OpenAI, Anthropic, Ollama, and others without
+provider-specific code.  Retries with exponential back-off are handled
+by tenacity.
+"""
+
 from __future__ import annotations
 
 import os
@@ -11,6 +19,7 @@ from providers.base import CompletionResult, ModelProvider, ProviderError
 
 
 class LiteLLMProvider(ModelProvider):
+    """Concrete provider backed by the ``litellm`` library."""
     def __init__(self, model_config: ModelConfig) -> None:
         self.model_config = model_config
         self._inject_api_keys()

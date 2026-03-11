@@ -1,3 +1,14 @@
+"""Configuration loader — reads ``settings.yaml``, applies env overrides, and validates.
+
+Resolution order:
+  1. ``settings.yaml`` (or path from ``CLAWSMITH_CONFIG_PATH``)
+  2. Environment variables prefixed ``CLAWSMITH_`` with ``__`` nesting
+  3. ``.env`` file via python-dotenv
+
+The validated ``ClawsmithConfig`` is cached as a process-wide singleton
+accessible via ``get_config()``.
+"""
+
 from __future__ import annotations
 
 import json
@@ -129,6 +140,8 @@ class MutationConfig(BaseModel):
 
 
 class ClawsmithConfig(BaseModel):
+    """Top-level configuration object aggregating all subsystem configs."""
+
     models: ModelsConfig
     routing: RoutingConfig = RoutingConfig()
     execution: ExecutionConfig = ExecutionConfig()

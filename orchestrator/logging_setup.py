@@ -1,3 +1,10 @@
+"""Logging setup — configures Rich-based console + file logging for ClawSmith.
+
+Call ``setup_logging()`` once at startup (the CLI does this automatically).
+Use ``get_logger(name)`` anywhere else to obtain a child logger.  Log level
+defaults to INFO and can be overridden with the ``LOG_LEVEL`` env variable.
+"""
+
 from __future__ import annotations
 
 import logging

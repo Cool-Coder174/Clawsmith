@@ -1,3 +1,5 @@
+"""Data models for scope contracts (access rules for tasks)."""
+
 from __future__ import annotations
 
 from enum import StrEnum

@@ -1,3 +1,10 @@
+"""Local LLM catalog — curated list of models with hardware requirements.
+
+Each ``LLMBundle`` entry specifies model size, quantization, minimum VRAM/RAM,
+and intended use (general, coding, chat).  The recommendation engine filters
+this catalog against the user's detected hardware profile.
+"""
+
 from __future__ import annotations
 
 from recommendation.models import LLMBundle

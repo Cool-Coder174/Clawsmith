@@ -1,3 +1,10 @@
+"""Shared Pydantic models and enums used across the orchestration pipeline.
+
+Contains data classes for task classification, routing decisions, job specs,
+execution results, pipeline results, and YOLO mode configuration.  These
+schemas are the common language between the CLI, MCP server, and TUI.
+"""
+
 from __future__ import annotations
 
 from enum import StrEnum

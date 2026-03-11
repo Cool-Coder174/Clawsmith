@@ -1,3 +1,5 @@
+"""Data models for the model installation pipeline."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel

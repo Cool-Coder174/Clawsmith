@@ -1,3 +1,9 @@
+"""Memory sync — reconciles on-disk memory with the current project state.
+
+Runs during ``clawsmith memory sync`` to merge newly detected information
+(hardware changes, new dependencies) into the persistent memory store.
+"""
+
 from __future__ import annotations
 
 import json

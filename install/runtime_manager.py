@@ -1,3 +1,5 @@
+"""Runtime manager — detects, starts, and manages local inference runtimes (Ollama, llama.cpp)."""
+
 from __future__ import annotations
 
 import platform

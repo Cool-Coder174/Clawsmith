@@ -1,3 +1,11 @@
+"""Mutation engine — propose, stage, validate, approve, apply, and rollback config changes.
+
+Implements the guarded mutation pipeline: changes are staged in a
+temporary directory, diffed against the original, validated for safety,
+and only applied after explicit approval.  Every mutation is recorded
+in an audit log so rollbacks are always possible.
+"""
+
 from __future__ import annotations
 
 import fnmatch

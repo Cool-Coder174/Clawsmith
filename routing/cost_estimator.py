@@ -1,3 +1,9 @@
+"""Cost estimator — projects USD cost across all model tiers for a given task.
+
+Used by the MCP ``cost_estimate`` tool and the TUI to show users what each
+tier would cost *before* they commit to running a task.
+"""
+
 from __future__ import annotations
 
 from pydantic import BaseModel
@@ -17,6 +23,8 @@ class TierCostEstimate(BaseModel):
 
 
 class CostEstimator:
+    """Estimates the dollar cost of running a task on each available model tier."""
+
     def __init__(self) -> None:
         self.models_config = get_config().models
 
@@ -37,6 +45,7 @@ class CostEstimator:
         context_size_tokens: int = 0,
         expected_output_tokens: int = 500,
     ) -> list[TierCostEstimate]:
+        """Return per-tier cost estimates sorted cheapest-first."""
         results: list[TierCostEstimate] = []
         input_tokens = context_size_tokens + len(task_description.split()) * 2
 
