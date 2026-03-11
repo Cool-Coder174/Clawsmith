@@ -1,0 +1,14 @@
+{
+  "id": "example001",
+  "task_type": "bugfix",
+  "objective": "Fix the login authentication bug in the user module",
+  "working_directory": ".",
+  "files_in_scope": ["orchestrator/pipeline.py", "orchestrator/schemas.py"],
+  "build_commands": ["pytest tests/ -v"],
+  "test_commands": [],
+  "prompt": "The login function raises a KeyError when the user session is missing. Fix it.",
+  "provider_preference": "local_code",
+  "timeout_seconds": 300,
+  "dry_run": true,
+  "retries": 1
+}

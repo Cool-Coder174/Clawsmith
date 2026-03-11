@@ -1,0 +1,26 @@
+# Heavy Remote Escalation Agent Profile
+# Escalates to the premium remote model for high-complexity refactoring tasks
+# that exceed the capability of local models. Uses longer timeouts and extra
+# retries to accommodate larger changes.
+
+name: heavy_remote_escalation
+description: >-
+  Escalates to the premium remote model for complex architectural refactors
+  and high-impact changes that require stronger reasoning capability.
+task_type: refactor
+working_directory: "."
+build_commands: []
+test_commands:
+  - "python -m pytest tests/ -v"
+prompt_template: agent_implement.bat.template
+variables:
+  OBJECTIVE: "Perform complex refactor using premium model"
+  CURSOR_PROMPT: "Perform the architectural refactor as described"
+provider_preference: premium
+timeout_seconds: 1800
+dry_run: false
+retries: 2
+tags:
+  - refactor
+  - premium
+  - escalation

@@ -1,0 +1,1 @@
+"""ClawSmith configuration package."""

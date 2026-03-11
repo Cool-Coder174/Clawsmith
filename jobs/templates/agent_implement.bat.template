@@ -1,0 +1,67 @@
+@echo off
+setlocal enabledelayedexpansion
+:: ClawSmith Implementation Job: $JOB_ID
+:: Objective: $OBJECTIVE
+:: Timeout: $TIMEOUT_SECONDS seconds
+
+set JOB_ID=$JOB_ID
+set ARTIFACT_DIR=$ARTIFACT_DIR
+set STDOUT_LOG=$ARTIFACT_DIR\stdout.log
+set STDERR_LOG=$ARTIFACT_DIR\stderr.log
+set TIMEOUT_SECONDS=$TIMEOUT_SECONDS
+set EXIT_CODE=0
+
+:: Record start time as seconds since midnight
+for /f "tokens=1-3 delims=:." %%a in ("%TIME: =0%") do set /a _START_S=%%a*3600+%%b*60+%%c
+
+cd /d "$WORKING_DIR"
+if errorlevel 1 (
+    echo [ERROR] Cannot cd to working directory: $WORKING_DIR
+    exit /b 1
+)
+
+echo [ClawSmith] Starting implementation job %JOB_ID% > "%STDOUT_LOG%"
+echo [ClawSmith] Objective: $OBJECTIVE >> "%STDOUT_LOG%"
+echo [ClawSmith] Timeout: %TIMEOUT_SECONDS%s >> "%STDOUT_LOG%"
+
+:: --- Build Setup ---
+$BUILD_COMMANDS
+
+call :CHECK_TIMEOUT
+if !EXIT_CODE! equ -2 goto :TIMEOUT_EXIT
+
+:: --- Implementation Agent ---
+echo [IMPLEMENT] Dispatching to Cursor agent for implementation task >> "%STDOUT_LOG%"
+echo [CURSOR] Invoking Cursor CLI >> "%STDOUT_LOG%"
+"$CURSOR_CLI_PATH" --command "$CURSOR_PROMPT" --no-interactive >> "%STDOUT_LOG%" 2>> "%STDERR_LOG%"
+if errorlevel 1 set EXIT_CODE=1
+
+call :CHECK_TIMEOUT
+if !EXIT_CODE! equ -2 goto :TIMEOUT_EXIT
+
+:: --- Post-Implementation Tests ---
+$TEST_COMMANDS
+
+call :CHECK_TIMEOUT
+if !EXIT_CODE! equ -2 goto :TIMEOUT_EXIT
+
+goto :FINISH
+
+:CHECK_TIMEOUT
+for /f "tokens=1-3 delims=:." %%a in ("%TIME: =0%") do set /a _NOW_S=%%a*3600+%%b*60+%%c
+set /a _ELAPSED=_NOW_S-_START_S
+if !_ELAPSED! lss 0 set /a _ELAPSED=_ELAPSED+86400
+if !_ELAPSED! geq %TIMEOUT_SECONDS% (
+    set EXIT_CODE=-2
+    echo [TIMEOUT] Job exceeded %TIMEOUT_SECONDS%s limit after !_ELAPSED!s >> "%STDOUT_LOG%"
+    echo [TIMEOUT] exceeded >> "%STDERR_LOG%"
+    echo -2 > "%ARTIFACT_DIR%\timeout.txt"
+)
+goto :eof
+
+:TIMEOUT_EXIT
+exit /b -2
+
+:FINISH
+echo [ClawSmith] Implementation job %JOB_ID% completed with exit code !EXIT_CODE! >> "%STDOUT_LOG%"
+exit /b !EXIT_CODE!

@@ -1,0 +1,23 @@
+# Prompt Polisher Agent Profile
+# Uses the prompt_polisher model tier to refine and improve draft prompts.
+# No build or test commands — purely a text transformation step.
+
+name: prompt_polisher
+description: >-
+  Uses the prompt_polisher model tier to refine draft prompts for clarity,
+  completeness, and optimal LLM consumption.
+task_type: prompt_polish
+working_directory: "."
+build_commands: []
+test_commands: []
+prompt_template: cursor_task.bat.template
+variables:
+  OBJECTIVE: "Polish and refine the draft prompt"
+  CURSOR_PROMPT: "Improve this prompt for clarity and completeness"
+provider_preference: prompt_polisher
+timeout_seconds: 120
+dry_run: false
+retries: 1
+tags:
+  - prompt
+  - polish

@@ -1,0 +1,26 @@
+# Code Audit Agent Profile
+# Runs a local code model for static analysis, linting, and type-checking.
+# Uses test_commands for audit checks (ruff, mypy) — no build step needed.
+
+name: code_audit
+description: >-
+  Runs a local code model to perform static analysis, lint checks, and
+  type-checking across the codebase. Reports all issues found.
+task_type: audit
+working_directory: "."
+build_commands: []
+test_commands:
+  - "ruff check ."
+  - "mypy orchestrator/ --ignore-missing-imports"
+prompt_template: agent_audit.bat.template
+variables:
+  OBJECTIVE: "Audit the codebase for issues"
+  CURSOR_PROMPT: "Audit this codebase and report all issues"
+provider_preference: local_code
+timeout_seconds: 300
+dry_run: false
+retries: 1
+tags:
+  - audit
+  - lint
+  - static-analysis

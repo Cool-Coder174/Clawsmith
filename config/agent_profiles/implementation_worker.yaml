@@ -1,0 +1,24 @@
+# Implementation Worker Agent Profile
+# Invokes the Cursor agent to implement a new feature, then runs post-
+# implementation tests to verify the result.
+
+name: implementation_worker
+description: >-
+  Dispatches a local code model to implement a requested feature.
+  Runs tests after implementation to verify correctness.
+task_type: implementation
+working_directory: "."
+build_commands: []
+test_commands:
+  - "python -m pytest tests/ -v"
+prompt_template: agent_implement.bat.template
+variables:
+  OBJECTIVE: "Implement the requested feature"
+  CURSOR_PROMPT: "Implement the feature as described"
+provider_preference: local_code
+timeout_seconds: 900
+dry_run: false
+retries: 1
+tags:
+  - implementation
+  - feature

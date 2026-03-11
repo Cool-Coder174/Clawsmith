@@ -1,0 +1,23 @@
+skill:
+  name: ClawSmith
+  description: "AI-powered local code orchestration with model routing and controlled execution"
+  version: "0.1.0"
+  mcp_endpoint: "http://127.0.0.1:8765/sse"
+  transport: sse
+  tools:
+    - repo_audit
+    - repo_map
+    - repo_pack_context
+    - route_pick_model
+    - cost_estimate
+    - cursor_run_job
+    - cursor_run_bat
+    - build_run
+    - tests_run
+    - git_create_worktree
+    - logs_read_recent
+    - prompts_generate_task_prompt
+  env_required:
+    - CLAWSMITH_CONFIG_PATH
+    - OPENAI_API_KEY  # or ANTHROPIC_API_KEY / OPENROUTER_API_KEY
+  setup_command: "scripts\\windows\\start_mcp_server.bat"

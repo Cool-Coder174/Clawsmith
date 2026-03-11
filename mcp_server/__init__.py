@@ -1,0 +1,1 @@
+"""ClawSmith MCP server package."""
