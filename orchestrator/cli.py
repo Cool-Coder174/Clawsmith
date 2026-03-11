@@ -869,7 +869,7 @@ def update(branch: str | None, force: bool) -> None:
 
     # 2 — Optional hard reset
     if force:
-        console.print("  Discarding local changes...", style="muted")
+        console.print("  Discarding local changes...", style="dim")
         subprocess.run(
             ["git", "reset", "--hard"],
             cwd=str(_REPO_ROOT), capture_output=True,
@@ -884,7 +884,7 @@ def update(branch: str | None, force: bool) -> None:
     if branch:
         pull_cmd = ["git", "pull", "--ff-only", "origin", branch]
 
-    console.print("  Pulling latest...", style="muted")
+    console.print("  Pulling latest...", style="dim")
     pull = subprocess.run(
         pull_cmd,
         cwd=str(_REPO_ROOT), capture_output=True, text=True,
@@ -931,7 +931,7 @@ def update(branch: str | None, force: bool) -> None:
             pass
 
     # 4 — Re-install package
-    console.print("\n  Re-installing package...", style="muted")
+    console.print("\n  Re-installing package...", style="dim")
     pip_exe = shutil.which("pip") or shutil.which("pip3") or sys.executable
     pip_cmd = (
         [pip_exe, "install", "-e", ".[dev]"]
