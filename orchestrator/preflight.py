@@ -64,7 +64,7 @@ def _ollama_installed() -> bool:
     return shutil.which("ollama") is not None
 
 
-def _ollama_reachable(timeout: float = 2.0) -> bool:
+def _ollama_reachable(timeout: float = 1.0) -> bool:
     """Quick TCP probe to check if ``ollama serve`` is listening."""
     try:
         with socket.create_connection((_OLLAMA_HOST, _OLLAMA_PORT), timeout=timeout):
@@ -180,11 +180,11 @@ def run_preflight() -> PreflightResult:
         )
 
     # --- MCP server ---------------------------------------------------
-    if _mcp_reachable():
+    if _mcp_reachable(timeout=0.3):
         result.mcp_running = True
     elif result.config_ok:
         thread = start_mcp_server_background()
-        result.mcp_running = thread is not None and _mcp_reachable()
+        result.mcp_running = thread is not None and _mcp_reachable(timeout=0.3)
         if not result.mcp_running:
             result.issues.append(
                 PreflightIssue(
@@ -239,7 +239,7 @@ _MCP_HOST = "127.0.0.1"
 _MCP_PORT = 8765
 
 
-def _mcp_reachable(timeout: float = 1.0) -> bool:
+def _mcp_reachable(timeout: float = 0.5) -> bool:
     """Quick TCP probe to check if the MCP server is already listening."""
     try:
         with socket.create_connection((_MCP_HOST, _MCP_PORT), timeout=timeout):
@@ -263,7 +263,7 @@ def start_mcp_server_background() -> threading.Thread | None:
     except Exception:
         host, port = _MCP_HOST, _MCP_PORT
 
-    if _mcp_reachable():
+    if _mcp_reachable(timeout=0.2):
         return None
 
     def _serve() -> None:
@@ -288,9 +288,10 @@ def start_mcp_server_background() -> threading.Thread | None:
     t = threading.Thread(target=_serve, daemon=True, name="clawsmith-mcp")
     t.start()
 
-    for _ in range(10):
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
         time.sleep(0.3)
-        if _mcp_reachable():
+        if _mcp_reachable(timeout=0.15):
             break
 
     return t
