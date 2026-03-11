@@ -67,6 +67,15 @@ class OpenClawConfig(BaseModel):
     skill_name: str = "ClawSmith"
     mcp_endpoint: str = "http://127.0.0.1:8765/sse"
     webhook_secret: str = ""
+    gateway_url: str = ""
+    api_key: str = ""
+    callback_url: str = ""
+    auto_register: bool = False
+    webhook_port: int = 8766
+    webhook_host: str = "127.0.0.1"
+    task_timeout: int = 600
+    share_api_keys: bool = True
+    share_local_models: bool = True
 
 
 class AgentOverride(BaseModel):

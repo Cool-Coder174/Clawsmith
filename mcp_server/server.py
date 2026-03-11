@@ -383,6 +383,152 @@ async def prompts_generate_task_prompt(
 
 
 # ---------------------------------------------------------------------------
+# OpenClaw integration tools
+# ---------------------------------------------------------------------------
+
+@mcp.tool
+async def openclaw_forward_task(
+    task: str,
+    repo_path: str = ".",
+    dry_run: bool = False,
+) -> str:
+    """Forward a task through the full ClawSmith orchestration pipeline.
+
+    This is the primary integration point for OpenClaw: it runs audit, map,
+    classify, route, prompt, dispatch, and execute, returning a structured
+    result with model used, tier, cost, and execution outcome.
+    """
+    try:
+        from providers.openclaw_adapter import OpenClawAdapter
+
+        adapter = OpenClawAdapter()
+        result = await adapter.forward_task(task, repo_path, dry_run)
+        return json.dumps(result, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, indent=2)
+
+
+@mcp.tool
+async def shared_providers() -> str:
+    """List LLM providers and models available for shared use by OpenClaw.
+
+    Returns which API key providers are configured (without exposing the keys),
+    which model tiers are available, and which local models are installed.
+    OpenClaw can use the ``shared_complete`` tool to route completions through
+    any of the listed providers.
+    """
+    try:
+        cfg = get_config()
+        oc = cfg.openclaw
+
+        if not oc.share_api_keys and not oc.share_local_models:
+            return json.dumps({"shared": False, "reason": "Sharing disabled in config"})
+
+        import os
+        import shutil
+
+        result: dict = {"shared": True, "api_providers": [], "tiers": [], "local_models": []}
+
+        if oc.share_api_keys:
+            for env_key, provider_name in [
+                ("OPENAI_API_KEY", "openai"),
+                ("ANTHROPIC_API_KEY", "anthropic"),
+                ("OPENROUTER_API_KEY", "openrouter"),
+            ]:
+                if os.environ.get(env_key):
+                    result["api_providers"].append(provider_name)
+
+            for tier_name in ("local_router", "local_code", "premium", "prompt_polisher"):
+                tier_cfg = getattr(cfg.models, tier_name)
+                result["tiers"].append({
+                    "tier": tier_name,
+                    "provider": tier_cfg.provider,
+                    "model": tier_cfg.model_name,
+                    "max_tokens": tier_cfg.max_tokens,
+                    "is_local": tier_cfg.provider == "ollama",
+                })
+
+        if oc.share_local_models and shutil.which("ollama"):
+            try:
+                import subprocess
+                proc = subprocess.run(
+                    ["ollama", "list"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if proc.returncode == 0:
+                    for line in proc.stdout.strip().splitlines()[1:]:
+                        parts = line.split()
+                        if parts:
+                            result["local_models"].append(parts[0])
+            except Exception:
+                pass
+
+        return json.dumps(result, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, indent=2)
+
+
+@mcp.tool
+async def shared_complete(
+    prompt: str,
+    tier: str = "local_code",
+    system_prompt: str = "",
+    max_tokens: int = 1024,
+    temperature: float = 0.2,
+) -> str:
+    """Run an LLM completion through ClawSmith's providers on behalf of OpenClaw.
+
+    This lets OpenClaw use ClawSmith's API keys and local models without needing
+    its own credentials.  Specify a ``tier`` (local_router, local_code, premium,
+    prompt_polisher) to pick which provider/model to use.
+    """
+    try:
+        cfg = get_config()
+        oc = cfg.openclaw
+
+        tier_cfg = getattr(cfg.models, tier, None)
+        if tier_cfg is None:
+            return json.dumps({"error": f"Unknown tier: {tier}"})
+
+        is_local = tier_cfg.provider == "ollama"
+        if is_local and not oc.share_local_models:
+            return json.dumps({"error": "Local model sharing is disabled in config"})
+        if not is_local and not oc.share_api_keys:
+            return json.dumps({"error": "API key sharing is disabled in config"})
+
+        from providers.registry import get_registry
+
+        provider = get_registry().get_provider(tier)
+        completion = await provider.complete(
+            prompt,
+            system_prompt=system_prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        return completion.model_dump_json(indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, indent=2)
+
+
+@mcp.tool
+async def openclaw_skill_manifest() -> str:
+    """Return the ClawSmith skill manifest for OpenClaw registration.
+
+    The manifest includes all available MCP tools, capabilities, endpoints,
+    and required environment variables — everything OpenClaw needs to
+    discover and route tasks to ClawSmith.
+    """
+    try:
+        from providers.openclaw_adapter import OpenClawAdapter
+
+        adapter = OpenClawAdapter()
+        manifest = adapter.build_skill_manifest()
+        return json.dumps(manifest, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, indent=2)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

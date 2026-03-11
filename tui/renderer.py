@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -22,6 +23,19 @@ from tui.theme import (
     TAGLINE,
     VERSION,
 )
+
+
+def _looks_like_markdown(text: str) -> bool:
+    """Return True if *text* likely contains Markdown formatting."""
+    if "```" in text or "**" in text or "| " in text:
+        return True
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith(("# ", "## ", "### ", "- ", "* ", "> ")):
+            return True
+        if stripped and stripped[0].isdigit() and ". " in stripped[:5]:
+            return True
+    return False
 
 
 class Renderer:
@@ -70,6 +84,11 @@ class Renderer:
         width = min(self.console.width, 72)
         self.console.print(SYM_SEPARATOR * width, style="separator")
 
+    def turn_separator(self) -> None:
+        """Subtle divider between chat turns — lighter than the structural separator."""
+        width = min(self.console.width - 4, 44)
+        self.console.print(f"  {SYM_SEPARATOR * width}", style="dim")
+
     def blank(self) -> None:
         self.console.print()
 
@@ -90,8 +109,9 @@ class Renderer:
     def agent_message(self, text: str) -> None:
         """Render an agent response.
 
-        If *text* contains markdown fences, render as Markdown;
-        otherwise print plain styled text.
+        If *text* contains markdown formatting, render via Rich Markdown;
+        otherwise print plain styled text.  Markdown output is left-padded
+        to align with the 4-space indent used for plain text.
         """
         self.console.print()
         label = Text.assemble(
@@ -101,9 +121,12 @@ class Renderer:
         )
         self.console.print(label)
 
-        if "```" in text or "**" in text or "| " in text:
+        if _looks_like_markdown(text):
             md = Markdown(text, code_theme="monokai")
-            self.console.print(md, width=min(self.console.width - 4, 80))
+            self.console.print(
+                Padding(md, (0, 0, 0, 4)),
+                width=min(self.console.width, 92),
+            )
         else:
             for line in text.splitlines():
                 self.console.print(f"    {line}", style="agent.text")

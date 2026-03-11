@@ -224,7 +224,7 @@ class ChatSession:
                 )
             )
             self.renderer.agent_message(response)
-            self.renderer.separator()
+            self.renderer.turn_separator()
 
         self.renderer.farewell()
 

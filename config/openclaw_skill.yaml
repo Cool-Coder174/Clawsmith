@@ -4,20 +4,46 @@ skill:
   version: "0.1.0"
   mcp_endpoint: "http://127.0.0.1:8765/sse"
   transport: sse
+  webhook_endpoint: "http://127.0.0.1:8766/webhook/task"
   tools:
     - repo_audit
     - repo_map
     - repo_pack_context
     - route_pick_model
     - cost_estimate
-    - cursor_run_job
-    - cursor_run_bat
+    - agent_run_job
+    - agent_run_bat
+    - detect_agent_clis
     - build_run
     - tests_run
     - git_create_worktree
     - logs_read_recent
     - prompts_generate_task_prompt
+    - machine_profile
+    - recommend_models
+    - installed_models
+    - workspace_graph
+    - scope_contract
+    - scope_check
+    - mutation_propose
+    - mutation_status
+    - memory_sync
+    - openclaw_forward_task
+    - openclaw_skill_manifest
+    - shared_providers
+    - shared_complete
+  capabilities:
+    - hardware_discovery
+    - model_recommendation
+    - model_inventory
+    - workspace_graph
+    - scope_engine
+    - guarded_mutation
+    - memory_sync
+    - task_forwarding
+    - shared_llm_provider
   env_required:
     - CLAWSMITH_CONFIG_PATH
     - OPENAI_API_KEY  # or ANTHROPIC_API_KEY / OPENROUTER_API_KEY
-  setup_command: "scripts\\windows\\start_mcp_server.bat"
+    - OPENCLAW_WEBHOOK_SECRET
+  setup_command: "clawsmith start --webhook"

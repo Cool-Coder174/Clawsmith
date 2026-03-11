@@ -65,7 +65,16 @@ mcp_server:
 openclaw:
   skill_name: ClawSmith
   mcp_endpoint: "http://127.0.0.1:8765/sse"
-  webhook_secret: ""   # set via env OPENCLAW_WEBHOOK_SECRET
+  webhook_secret: ""          # set via env OPENCLAW_WEBHOOK_SECRET
+  gateway_url: ""             # OpenClaw gateway URL, e.g. https://openclaw.example.com
+  api_key: ""                 # set via env OPENCLAW_API_KEY
+  callback_url: ""            # URL OpenClaw can reach to get status updates
+  auto_register: false        # auto-register as skill on server start
+  webhook_port: 8766          # port for the inbound webhook receiver
+  webhook_host: "127.0.0.1"
+  task_timeout: 600           # max seconds for a forwarded task
+  share_api_keys: true        # let OpenClaw route completions through our API keys
+  share_local_models: true    # let OpenClaw use our local Ollama models
 
 agents:
   default_agent: null              # null = auto-select best available CLI

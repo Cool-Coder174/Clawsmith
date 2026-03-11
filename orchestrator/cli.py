@@ -455,8 +455,14 @@ def smoke_test() -> None:
 @click.option(
     "--port", default=None, type=int, help="Listen port (default from config).",
 )
-def start(host: str | None, port: int | None) -> None:
-    """Start ClawSmith (MCP server + health check)."""
+@click.option(
+    "--webhook", is_flag=True,
+    help="Also start the OpenClaw webhook receiver alongside the MCP server.",
+)
+def start(host: str | None, port: int | None, webhook: bool) -> None:
+    """Start ClawSmith (MCP server + optional webhook receiver)."""
+    import threading
+
     from config.config_loader import get_config
     from orchestrator.logging_setup import setup_logging
 
@@ -470,6 +476,22 @@ def start(host: str | None, port: int | None) -> None:
         f"{effective_host}:{effective_port} "
         f"(transport={cfg.mcp_server.transport})"
     )
+
+    if webhook:
+        from providers.openclaw_webhook import run_webhook_server
+
+        wh_host = cfg.openclaw.webhook_host
+        wh_port = cfg.openclaw.webhook_port
+        console.print(
+            f"[bold cyan]Webhook receiver[/bold cyan] on "
+            f"{wh_host}:{wh_port}"
+        )
+        wh_thread = threading.Thread(
+            target=run_webhook_server,
+            kwargs={"host": wh_host, "port": wh_port},
+            daemon=True,
+        )
+        wh_thread.start()
 
     from mcp_server.server import mcp as mcp_app
 
@@ -487,6 +509,143 @@ def register_skill(output: str) -> None:
     adapter = OpenClawAdapter()
     path = adapter.register_as_skill(Path(output))
     console.print(f"[bold green]Skill file written to:[/bold green] {path}")
+
+
+# ---------------------------------------------------------------------------
+# openclaw command group
+# ---------------------------------------------------------------------------
+
+@cli.group("openclaw")
+def openclaw_group() -> None:
+    """OpenClaw integration commands."""
+
+
+@openclaw_group.command("webhook")
+@click.option("--host", default=None, help="Bind address (default from config).")
+@click.option("--port", default=None, type=int, help="Listen port (default from config).")
+def openclaw_webhook(host: str | None, port: int | None) -> None:
+    """Start the OpenClaw webhook receiver (standalone)."""
+    from orchestrator.logging_setup import setup_logging
+    from providers.openclaw_webhook import run_webhook_server
+
+    setup_logging()
+    console.print(Panel("[bold cyan]OpenClaw Webhook Receiver[/bold cyan]", expand=False))
+    run_webhook_server(host=host, port=port)
+
+
+@openclaw_group.command("register")
+@click.option("--output", default="SKILL.md", help="Output path for SKILL.md.")
+@click.option("--remote", is_flag=True, help="Also push manifest to OpenClaw gateway.")
+def openclaw_register(output: str, remote: bool) -> None:
+    """Register ClawSmith as an OpenClaw skill."""
+    from orchestrator.logging_setup import setup_logging
+    from providers.openclaw_adapter import OpenClawAdapter
+
+    setup_logging()
+    adapter = OpenClawAdapter()
+
+    path = adapter.register_as_skill(Path(output))
+    console.print(f"[bold green]Skill file written to:[/bold green] {path}")
+
+    if remote:
+        result = asyncio.run(adapter.register_with_gateway())
+        if result:
+            console.print(
+                f"[bold green]Registered with gateway:[/bold green] "
+                f"{result.get('skill_id', 'ok')}"
+            )
+        else:
+            console.print("[yellow]Remote registration skipped (no gateway configured).[/yellow]")
+
+
+@openclaw_group.command("ping")
+def openclaw_ping() -> None:
+    """Check connectivity to the OpenClaw gateway."""
+    from config.config_loader import get_config
+    from orchestrator.logging_setup import setup_logging
+    from providers.openclaw_client import get_client
+
+    setup_logging()
+    cfg = get_config().openclaw
+
+    if not cfg.gateway_url:
+        console.print("[yellow]No gateway_url configured in openclaw section.[/yellow]")
+        return
+
+    console.print(f"Pinging [cyan]{cfg.gateway_url}[/cyan] ...")
+    client = get_client()
+    reachable = asyncio.run(client.ping())
+    asyncio.run(client.close())
+
+    if reachable:
+        console.print("[bold green]Gateway is reachable.[/bold green]")
+    else:
+        console.print("[bold red]Gateway is not reachable.[/bold red]")
+
+
+@openclaw_group.command("status")
+def openclaw_status() -> None:
+    """Show current OpenClaw integration status."""
+    from config.config_loader import get_config
+    from orchestrator.logging_setup import setup_logging
+
+    setup_logging()
+    cfg = get_config().openclaw
+
+    table = Table(title="OpenClaw Integration Status", show_lines=True)
+    table.add_column("Setting", style="cyan", min_width=20)
+    table.add_column("Value")
+
+    table.add_row("Skill Name", cfg.skill_name)
+    table.add_row("MCP Endpoint", cfg.mcp_endpoint)
+    table.add_row("Webhook Host:Port", f"{cfg.webhook_host}:{cfg.webhook_port}")
+    table.add_row(
+        "Gateway URL",
+        cfg.gateway_url if cfg.gateway_url else "[dim]not configured[/dim]",
+    )
+    table.add_row(
+        "API Key",
+        "[green]set[/green]" if cfg.api_key else "[dim]not set[/dim]",
+    )
+    table.add_row(
+        "Webhook Secret",
+        "[green]set[/green]" if cfg.webhook_secret else "[yellow]not set (auth disabled)[/yellow]",
+    )
+    table.add_row("Auto-register", str(cfg.auto_register))
+    table.add_row(
+        "Callback URL",
+        cfg.callback_url if cfg.callback_url else "[dim]not configured[/dim]",
+    )
+    table.add_row("Task Timeout", f"{cfg.task_timeout}s")
+
+    console.print(table)
+
+    if cfg.gateway_url:
+        from providers.openclaw_client import get_client
+
+        console.print("\nChecking gateway connectivity...", style="dim")
+        client = get_client()
+        reachable = asyncio.run(client.ping())
+        asyncio.run(client.close())
+        if reachable:
+            console.print("[bold green]Gateway reachable.[/bold green]")
+        else:
+            console.print("[bold red]Gateway unreachable.[/bold red]")
+
+
+@openclaw_group.command("manifest")
+def openclaw_manifest() -> None:
+    """Print the skill manifest JSON that would be sent to OpenClaw."""
+    import json as json_mod
+
+    from orchestrator.logging_setup import setup_logging
+    from providers.openclaw_adapter import OpenClawAdapter
+
+    setup_logging()
+    adapter = OpenClawAdapter()
+    manifest = adapter.build_skill_manifest()
+    syntax = Syntax(json_mod.dumps(manifest, indent=2), "json", theme="monokai")
+    console.print(syntax)
 
 
 @cli.command("chat")

@@ -228,10 +228,38 @@ class DoctorChecker:
         if self._cfg is None:
             self._warn(name, "Skipped — config failed to parse")
             return
-        if self._cfg.openclaw is not None:
-            self._pass(name)
-        else:
+        if self._cfg.openclaw is None:
             self._warn(name, "openclaw section is missing from config")
+            return
+
+        self._pass(name)
+        oc = self._cfg.openclaw
+
+        secret_name = "OpenClaw webhook secret"
+        if oc.webhook_secret:
+            self._pass(secret_name, "configured")
+        else:
+            self._warn(
+                secret_name,
+                "Not set — webhook auth disabled. "
+                "Set OPENCLAW_WEBHOOK_SECRET in .env",
+            )
+
+        gw_name = "OpenClaw gateway URL"
+        if oc.gateway_url:
+            self._pass(gw_name, oc.gateway_url)
+        else:
+            self._warn(
+                gw_name,
+                "Not configured — outbound communication disabled. "
+                "Set openclaw.gateway_url in settings.yaml",
+            )
+
+        ep_name = "OpenClaw MCP endpoint"
+        if oc.mcp_endpoint:
+            self._pass(ep_name, oc.mcp_endpoint)
+        else:
+            self._warn(ep_name, "mcp_endpoint is empty")
 
     def _check_dir(self, label: str, path: Path, *, fail: bool) -> None:
         name = f"{label} dir exists"
