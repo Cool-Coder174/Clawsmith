@@ -44,6 +44,63 @@ from tools.repo_mapper import RepoMapper
 logger = get_logger("yolo")
 
 
+def _resolve_backend(root: Path, bc: BackendConfig) -> ExecutionBackend:
+    """Detect the best available execution backend.
+
+    Tries CLI agents first (via the agent registry/router).  Falls back
+    to the local LLM backend when no agent CLI is installed.
+    """
+    try:
+        from agents.registry import get_agent_registry
+        from agents.router import AgentNotAvailableError, AgentRouter
+
+        try:
+            from config.config_loader import get_config
+            config = get_config()
+            default_agent = config.agents.default_agent
+            fallback_order = config.agents.fallback_order
+            auto_detect = config.agents.auto_detect
+        except Exception:
+            default_agent = None
+            fallback_order = None
+            auto_detect = True
+
+        registry = get_agent_registry(auto_detect=auto_detect)
+        router = AgentRouter(
+            registry,
+            default_agent=default_agent,
+            fallback_order=fallback_order,
+        )
+
+        decision = router.select_agent(needs_headless=True)
+        detection = registry.get_detection(decision.agent_id)
+        adapter = decision.adapter
+
+        agent_cmd = (
+            detection.executable_path
+            if detection and detection.executable_path
+            else adapter.executable_names[0]
+        )
+
+        logger.info(
+            "Auto-detected agent CLI: %s (%s)",
+            decision.agent_id, agent_cmd,
+        )
+        return CliAgentBackend(
+            config=bc,
+            agent_command=agent_cmd,
+            adapter=adapter,
+        )
+
+    except AgentNotAvailableError:
+        logger.info("No CLI agent found; falling back to local LLM backend")
+    except Exception as exc:
+        logger.warning("Agent detection failed (%s); using LLM backend", exc)
+
+    from execution.llm_backend import LlmBackend
+    return LlmBackend(config=bc)
+
+
 class YoloEngine:
     """Autonomous multi-phase execution engine.
 
@@ -260,11 +317,11 @@ class YoloEngine:
     # -- executor factory ---------------------------------------------------
 
     def _create_executor(self, root: Path) -> PhaseExecutor:
-        """Build a PhaseExecutor with the configured backend."""
+        """Build a PhaseExecutor with the configured or auto-detected backend."""
         bc = self._backend_config or BackendConfig(
             working_directory=str(root),
         )
-        backend = self._backend or CliAgentBackend(config=bc)
+        backend = self._backend or _resolve_backend(root, bc)
         return PhaseExecutor(
             repo_path=root,
             backend=backend,

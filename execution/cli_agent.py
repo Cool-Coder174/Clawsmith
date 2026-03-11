@@ -12,6 +12,12 @@ Windows environment variables have practical limits (~32 KB). When the prompt
 exceeds ``prompt_file_fallback_bytes``, the backend writes it to a temp file
 and adjusts the invocation to read from that file instead.  The temp file is
 cleaned up after execution.
+
+Adapter support
+---------------
+When constructed with an ``AgentAdapter``, the backend delegates command
+construction to ``adapter.build_invocation()`` so that each agent CLI
+(Cursor, Claude Code, Gemini, etc.) gets its native invocation pattern.
 """
 
 from __future__ import annotations
@@ -23,10 +29,14 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from execution.backend import BackendConfig, ExecutionBackend
 from execution.models import PhaseExecStatus, PhaseExecutionResult
 from orchestrator.logging_setup import get_logger
+
+if TYPE_CHECKING:
+    from agents.base import AgentAdapter
 
 logger = get_logger("cli_agent_backend")
 
@@ -34,16 +44,12 @@ _IS_WINDOWS = platform.system() == "Windows"
 
 
 class CliAgentBackend(ExecutionBackend):
-    """Runs phases via ``agent chat`` with prompt delivered through an env var.
+    """Runs phases via a detected CLI agent with prompt delivery.
 
-    On Windows PowerShell the invocation is::
-
-        $env:CLAWSMITH_PROMPT = "<prompt>"
-        agent chat "$env:CLAWSMITH_PROMPT"
-
-    On POSIX shells::
-
-        CLAWSMITH_PROMPT="<prompt>" agent chat "$CLAWSMITH_PROMPT"
+    When constructed with an ``adapter``, the backend uses
+    ``adapter.build_invocation()`` for correct per-agent invocation.
+    Without an adapter it falls back to the classic
+    ``{agent_command} {agent_subcommand} $env:CLAWSMITH_PROMPT`` pattern.
     """
 
     def __init__(
@@ -52,19 +58,25 @@ class CliAgentBackend(ExecutionBackend):
         *,
         agent_command: str = "agent",
         agent_subcommand: str = "chat",
+        adapter: AgentAdapter | None = None,
     ) -> None:
         self._config = config or BackendConfig()
         self._agent_cmd = agent_command
         self._agent_sub = agent_subcommand
+        self._adapter = adapter
         self._temp_files: list[Path] = []
 
     @property
     def backend_id(self) -> str:
+        if self._adapter:
+            return f"cli_agent:{self._adapter.agent_id}"
         return "cli_agent"
 
     @property
     def display_name(self) -> str:
-        return "CLI Agent (agent chat)"
+        if self._adapter:
+            return f"CLI Agent ({self._adapter.display_name})"
+        return f"CLI Agent ({self._agent_cmd} {self._agent_sub})"
 
     async def execute_phase(
         self,
@@ -95,7 +107,13 @@ class CliAgentBackend(ExecutionBackend):
         prompt_file_path: Path | None = None
         env = self._build_env(env_overrides)
 
-        if use_file:
+        if self._adapter:
+            args, env = self._build_adapter_args(prompt, cwd, env, use_file, phase_index)
+            if use_file:
+                prompt_file_path = self._temp_files[-1] if self._temp_files else None
+                if prompt_file_path:
+                    result.prompt_file = str(prompt_file_path)
+        elif use_file:
             prompt_file_path = self._write_prompt_file(prompt, phase_index)
             result.prompt_file = str(prompt_file_path)
             env[env_name] = str(prompt_file_path)
@@ -181,7 +199,10 @@ class CliAgentBackend(ExecutionBackend):
         return self._finalize(result)
 
     async def health_check(self) -> bool:
-        return shutil.which(self._agent_cmd) is not None
+        cmd = self._agent_cmd
+        if self._adapter:
+            cmd = self._adapter.executable_names[0]
+        return shutil.which(cmd) is not None
 
     def cleanup(self) -> None:
         for f in self._temp_files:
@@ -191,6 +212,49 @@ class CliAgentBackend(ExecutionBackend):
             except OSError:
                 pass
         self._temp_files.clear()
+
+    def _build_adapter_args(
+        self,
+        prompt: str,
+        cwd: str,
+        env: dict[str, str],
+        use_file: bool,
+        phase_index: int,
+    ) -> tuple[list[str], dict[str, str]]:
+        """Build invocation args using the adapter's native CLI pattern.
+
+        Replaces the adapter's default executable name (e.g. ``"agent"``)
+        with the actual detected path (e.g. ``agent.CMD``), and wraps
+        ``.cmd``/``.bat`` scripts through ``cmd.exe /c`` on Windows so
+        ``create_subprocess_exec`` can launch them.
+        """
+        assert self._adapter is not None
+
+        prompt_file: Path | None = None
+        if use_file:
+            prompt_file = self._write_prompt_file(prompt, phase_index)
+            logger.info(
+                "Phase %d prompt too large, using file: %s",
+                phase_index, prompt_file,
+            )
+
+        invocation = self._adapter.build_invocation(
+            prompt,
+            working_directory=cwd,
+            timeout_seconds=self._config.timeout_seconds,
+            prompt_file=prompt_file,
+        )
+
+        args = list(invocation.args)
+
+        if args and self._agent_cmd and self._agent_cmd != args[0]:
+            args[0] = self._agent_cmd
+
+        if _IS_WINDOWS and args and args[0].lower().endswith((".cmd", ".bat")):
+            args = ["cmd.exe", "/c"] + args
+
+        env.update(invocation.env_overrides)
+        return args, env
 
     def _build_env(self, overrides: dict[str, str] | None = None) -> dict[str, str]:
         env = os.environ.copy()
@@ -205,7 +269,10 @@ class CliAgentBackend(ExecutionBackend):
             if _IS_WINDOWS
             else f"${self._config.env_var_name}"
         )
-        return [self._agent_cmd, self._agent_sub, env_ref]
+        args = [self._agent_cmd, self._agent_sub, env_ref]
+        if _IS_WINDOWS and self._agent_cmd.lower().endswith((".cmd", ".bat")):
+            args = ["cmd.exe", "/c"] + args
+        return args
 
     def _build_file_args(self, prompt_file: Path) -> list[str]:
         if _IS_WINDOWS:
