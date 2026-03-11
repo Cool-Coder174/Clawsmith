@@ -45,7 +45,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["orchestrator*", "mcp_server*", "providers*", "routing*", "tools*", "jobs*", "config*", "prompts*", "agents*", "discovery*", "recommendation*", "install*", "memory_skill*", "repo_graph*", "scope_engine*", "mutation_engine*", "tui*"]
+include = ["orchestrator*", "mcp_server*", "providers*", "routing*", "tools*", "jobs*", "config*", "prompts*", "agents*", "discovery*", "recommendation*", "install*", "memory_skill*", "repo_graph*", "scope_engine*", "mutation_engine*", "tui*", "execution*"]
 
 [tool.ruff]
 target-version = "py311"
