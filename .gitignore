@@ -24,6 +24,7 @@ coverage.xml
 # ClawSmith runtime output
 artifacts/*
 !artifacts/.gitkeep
+!artifacts/audits/
 logs/*
 !logs/.gitkeep
 jobs/generated/
