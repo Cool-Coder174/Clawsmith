@@ -197,19 +197,79 @@ class ChatRuntime:
         self.state.loaded_skills = registry.list_all()
         return len(new_skills)
 
-    def remember(self, content: str, category: str = "note", tags: list[str] | None = None) -> str:
-        """Store an always-remember entry."""
+    def remember(
+        self,
+        content: str,
+        category: str = "note",
+        tags: list[str] | None = None,
+        *,
+        dependency_stack: list[str] | None = None,
+        workflow_type: str = "",
+        task_category: str = "",
+    ) -> str:
+        """Store an always-remember entry with typed dimensions."""
         from memory_skill.always_remember import AlwaysRemember
 
         ar = AlwaysRemember(self.state.workspace_root)
-        return ar.remember(content, category, tags, str(self.state.repo_path))
+        return ar.remember(
+            content, category, tags, str(self.state.repo_path),
+            workspace=str(self.state.workspace_root),
+            dependency_stack=dependency_stack or self.state.repo_stacks[:5],
+            workflow_type=workflow_type,
+            task_category=task_category,
+        )
 
-    def list_memories(self) -> list[dict[str, Any]]:
-        """List all always-remember entries."""
+    def promote_outcome(
+        self,
+        content: str,
+        *,
+        category: str = "accepted_outcome",
+        tags: list[str] | None = None,
+        workflow_type: str = "",
+        task_category: str = "",
+        usefulness_score: float = 0.8,
+    ) -> str:
+        """Promote an accepted task outcome into durable memory."""
+        self.initialize()
         from memory_skill.always_remember import AlwaysRemember
 
         ar = AlwaysRemember(self.state.workspace_root)
-        return ar.list_entries()
+        return ar.promote_outcome(
+            content, category, tags, str(self.state.repo_path),
+            workspace=str(self.state.workspace_root),
+            dependency_stack=self.state.repo_stacks[:5],
+            workflow_type=workflow_type,
+            task_category=task_category,
+            usefulness_score=usefulness_score,
+        )
+
+    def suppress_memory(self, entry_id: str) -> bool:
+        """Suppress a memory entry so it is excluded from future retrieval."""
+        from memory_skill.always_remember import AlwaysRemember
+
+        ar = AlwaysRemember(self.state.workspace_root)
+        return ar.suppress(entry_id)
+
+    def unsuppress_memory(self, entry_id: str) -> bool:
+        """Remove suppression from a memory entry."""
+        from memory_skill.always_remember import AlwaysRemember
+
+        ar = AlwaysRemember(self.state.workspace_root)
+        return ar.unsuppress(entry_id)
+
+    def decay_memories(self) -> list[str]:
+        """Auto-suppress memories that are retrieved often but never accepted."""
+        from memory_skill.always_remember import AlwaysRemember
+
+        ar = AlwaysRemember(self.state.workspace_root)
+        return ar.decay()
+
+    def list_memories(self, *, include_suppressed: bool = False) -> list[dict[str, Any]]:
+        """List always-remember entries."""
+        from memory_skill.always_remember import AlwaysRemember
+
+        ar = AlwaysRemember(self.state.workspace_root)
+        return ar.list_entries(include_suppressed=include_suppressed)
 
     def _detect_repo_stacks(self) -> None:
         """Detect the technology stacks present in the repo."""
@@ -261,6 +321,7 @@ class ChatRuntime:
             self.state.retrieved_memories = retriever.retrieve(
                 task,
                 repo_path=self.state.repo_path,
+                task_stacks=self.state.repo_stacks,
             )
         except Exception as exc:
             log.debug("Memory retrieval failed (non-fatal): %s", exc)

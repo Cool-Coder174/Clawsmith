@@ -571,9 +571,20 @@ def _cmd_plan(session: ChatSession, _args: list[str]) -> None:
 
 
 def _cmd_remember(session: ChatSession, args: list[str]) -> None:
-    """Store an always-remember memory."""
+    """Store, list, promote, suppress, or decay always-remember memory.
+
+    Sub-commands:
+        /remember                  — list entries
+        /remember <text>           — store a new entry
+        /remember promote <text>   — promote an outcome
+        /remember suppress <id>    — suppress an entry
+        /remember unsuppress <id>  — un-suppress an entry
+        /remember decay            — auto-suppress noisy entries
+        /remember why <task>       — explain retrieval for a task
+    """
+    runtime = _get_session_runtime(session)
+
     if not args:
-        runtime = _get_session_runtime(session)
         entries = runtime.list_memories()
         if not entries:
             session.renderer.system_message(
@@ -581,23 +592,90 @@ def _cmd_remember(session: ChatSession, args: list[str]) -> None:
             )
             return
         columns = [
+            ("ID", "dim"),
             ("Category", "brand"),
             ("Content", ""),
+            ("Score", "success"),
+            ("Hits", ""),
+            ("Accepts", ""),
             ("Tags", "muted"),
         ]
         rows = [
             [
+                e.get("id", "")[:8],
                 e.get("category", "note"),
-                e.get("content", "")[:60],
-                ", ".join(e.get("tags", [])),
+                e.get("content", "")[:45],
+                f"{e.get('usefulness_score', 0.0):.1f}",
+                str(e.get("hit_count", 0)),
+                str(e.get("accept_count", 0)),
+                ", ".join(e.get("tags", [])[:3]),
             ]
             for e in entries
         ]
         session.renderer.ranked_table("Always Remember", columns, rows)
         return
 
+    sub = args[0].lower()
+
+    if sub == "promote" and len(args) > 1:
+        content = " ".join(args[1:])
+        eid = runtime.promote_outcome(content, category="user_promoted", tags=["promoted"])
+        session.renderer.system_message(f"Promoted to memory (id={eid}): {content}")
+        return
+
+    if sub == "suppress" and len(args) > 1:
+        eid = args[1]
+        ok = runtime.suppress_memory(eid)
+        if ok:
+            session.renderer.system_message(f"Suppressed memory {eid}")
+        else:
+            session.renderer.error_message(f"Memory {eid} not found")
+        return
+
+    if sub == "unsuppress" and len(args) > 1:
+        eid = args[1]
+        ok = runtime.unsuppress_memory(eid)
+        if ok:
+            session.renderer.system_message(f"Unsuppressed memory {eid}")
+        else:
+            session.renderer.error_message(f"Memory {eid} not found")
+        return
+
+    if sub == "decay":
+        suppressed = runtime.decay_memories()
+        if suppressed:
+            session.renderer.system_message(
+                f"Auto-suppressed {len(suppressed)} noisy entries: {', '.join(suppressed)}"
+            )
+        else:
+            session.renderer.system_message("No entries met the decay threshold.")
+        return
+
+    if sub == "why" and len(args) > 1:
+        task = " ".join(args[1:])
+        mems = runtime.retrieve_memories_for(task)
+        if not mems:
+            session.renderer.system_message("No memories retrieved for that task.")
+            return
+        columns = [
+            ("Category", "brand"),
+            ("Content", ""),
+            ("Score", "success"),
+            ("Why", "muted"),
+        ]
+        rows = [
+            [
+                m["category"],
+                m["content"][:40],
+                f"{m['relevance']:.3f}",
+                m.get("explanation", ""),
+            ]
+            for m in mems[:10]
+        ]
+        session.renderer.ranked_table("Memory Retrieval Explanation", columns, rows)
+        return
+
     content = " ".join(args)
-    runtime = _get_session_runtime(session)
     entry_id = runtime.remember(content, category="user_note", tags=["user"])
     session.renderer.system_message(f"Remembered (id={entry_id}): {content}")
 
