@@ -657,6 +657,86 @@ def chat(repo_path: str) -> None:
     ChatSession(repo_path=repo_path).run()
 
 
+# ---------------------------------------------------------------------------
+# skills group
+# ---------------------------------------------------------------------------
+
+@cli.group("skills")
+def skills_group() -> None:
+    """Manage ClawSmith skills — list, generate, and inspect."""
+
+
+@skills_group.command("list")
+@click.option("--repo-path", default=".", help="Repository path.")
+def skills_list(repo_path: str) -> None:
+    """List all loaded skills."""
+    from orchestrator.chat_runtime import ChatRuntime
+
+    runtime = ChatRuntime(repo_path=repo_path)
+    runtime.initialize()
+    skills = runtime.list_skills()
+
+    if not skills:
+        console.print("[dim]No skills found. Run 'clawsmith skills generate' first.[/dim]")
+        return
+
+    table = Table(title="Loaded Skills", show_lines=True)
+    table.add_column("Name", style="cyan")
+    table.add_column("Source", min_width=12)
+    table.add_column("Enabled")
+    table.add_column("Confidence")
+    table.add_column("Triggers", style="dim")
+
+    for s in skills:
+        table.add_row(
+            s["name"],
+            s["source_type"],
+            "[green]Yes[/green]" if s["enabled"] else "[red]No[/red]",
+            f"{s['confidence']:.0%}",
+            ", ".join(s["triggers"][:3]),
+        )
+    console.print(table)
+
+
+@skills_group.command("generate")
+@click.option("--repo-path", default=".", help="Repository path.")
+def skills_generate(repo_path: str) -> None:
+    """Auto-generate skills from repository structure and dependencies."""
+    from orchestrator.chat_runtime import ChatRuntime
+
+    runtime = ChatRuntime(repo_path=repo_path)
+    runtime.initialize()
+    count = runtime.regenerate_skills()
+    console.print(f"[bold green]Generated {count} skill(s).[/bold green]")
+
+    for s in runtime.list_skills():
+        console.print(f"  [cyan]{s['name']}[/cyan] ({s['source_type']}, {s['confidence']:.0%})")
+
+
+@skills_group.command("score")
+@click.option("--task", required=True, help="Task to score skills against.")
+@click.option("--repo-path", default=".", help="Repository path.")
+def skills_score(task: str, repo_path: str) -> None:
+    """Score skills for a given task and explain selection."""
+    from orchestrator.chat_runtime import ChatRuntime
+
+    runtime = ChatRuntime(repo_path=repo_path)
+    runtime.initialize()
+    result = runtime.select_skills_for(task)
+
+    if result["scored"]:
+        table = Table(title="Skill Scores", show_lines=True)
+        table.add_column("Skill", style="cyan")
+        table.add_column("Score", style="green")
+        table.add_column("Reason", style="dim")
+
+        for s in result["scored"][:10]:
+            table.add_row(s["name"], f"{s['score']:.3f}", s["reason"])
+        console.print(table)
+
+    console.print(f"\n{result.get('explanation', '')}")
+
+
 @cli.command("detect-agents")
 def detect_agents() -> None:
     """Scan for installed agent CLIs and display a capability matrix."""
