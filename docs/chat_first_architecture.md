@@ -137,34 +137,117 @@ Each generated skill includes:
 
 ## Memory System Design
 
+**"Always remember" does not mean "dump everything into context."**  It means
+durable storage + ranked retrieval + explainable selection.
+
 ### Memory Types
 
 | Type | Source | Use Case |
 |------|--------|----------|
 | **Repo Memory** | `clawsmith/` directory | Architecture, preferences, tooling, conventions |
-| **Always Remember** | `.clawsmith/always_remember/` | User annotations, cross-session facts |
+| **Always Remember** | `.clawsmith/always_remember/` | User annotations, accepted outcomes, cross-session facts |
 | **Cross-Repo Memory** | Linked repos via `repo_graph` | Shared conventions, related patterns |
+
+### Typed Dimensions on Every Entry
+
+Every `MemoryEntry` (Pydantic model) carries typed dimensions so the ranker
+can score it against the current task without context flooding:
+
+| Dimension | Field(s) | Purpose |
+|-----------|----------|---------|
+| **Repo** | `repo` | Which repository this memory belongs to |
+| **Workspace** | `workspace` | Multi-repo workspace root |
+| **Dependency stack** | `dependency_stack: list[str]` | Language/framework tags (python, fastapi, …) |
+| **Workflow type** | `workflow_type` | build, test, lint, deploy, … |
+| **Task category** | `task_category` | bugfix, refactor, debug, … |
+| **Recency** | `created_at`, `last_accessed_at` | Timestamps for exponential decay |
+| **Acceptance** | `hit_count`, `accept_count`, `usefulness_score` | How useful the memory has been |
+| **Suppressed** | `suppressed` | Explicitly silenced entries are filtered out |
 
 ### Retrieval and Ranking
 
-The `MemoryRetriever` loads candidates from all sources and ranks them by:
+The ranker (`rank_entries`) applies these scoring dimensions in order:
 
-1. **Token overlap** — word overlap between task and memory content
-2. **Tag overlap** — memory tags matching task keywords
-3. **Source boost** — always_remember > repo > cross_repo
-4. **Repo proximity** — current repo memories boosted
-5. **Category boost** — conventions and stack notes boosted
+| # | Dimension | Weight | Mechanism |
+|---|-----------|--------|-----------|
+| 1 | Token overlap | 0.05/word, cap 0.25 | Task words ∩ entry content words |
+| 2 | Tag overlap | 0.08/tag | Task words ∩ entry tags |
+| 3 | Dependency-stack match | 0.12/stack | Repo stacks ∩ entry stacks |
+| 4 | Workflow-type match | 0.10 | Exact match on workflow type |
+| 5 | Task-category match | 0.10 | Exact match on task category |
+| 6 | Source boost | 0.10/0.06/0.03 | always_remember > repo > cross_repo |
+| 7 | Repo proximity | 0.12 | Entry repo == current repo |
+| 8 | Recency | 0.10 × decay | Exponential decay, half-life 30 days |
+| 9 | Acceptance | 0.15 × factor | usefulness_score or accept/hit ratio |
 
-Retrieval is bounded (`max_entries`) to prevent context flooding.
+Suppressed entries are **excluded** before scoring — they never appear in
+results.  Retrieval is bounded by `max_entries` (default 10).
 
-### Always Remember
+Each retrieved entry gets an `explanation` string describing which scoring
+dimensions contributed.
 
-Durable annotations stored as JSON in `.clawsmith/always_remember/`. Supports:
+### Promotion — Accepted Outcomes → Durable Memory
 
-- `remember(content, category, tags)` — store a new entry
-- `forget(entry_id)` — remove an entry
-- `list_entries()` — list all entries
-- `search(query)` — search by content/tag
+`AlwaysRemember.promote_outcome()` promotes an accepted task result into
+persistent memory:
+
+- If the entry already exists (same content+category), its `accept_count`
+  and `usefulness_score` are incremented — no duplicate is created.
+- Re-promoting an entry automatically un-suppresses it.
+- Promoted entries start with `usefulness_score=0.8` so they rank high
+  on their next retrieval.
+
+### Suppression — Noise Control
+
+`AlwaysRemember.suppress(entry_id)` marks an entry as suppressed.  It is
+**not** deleted — it can be un-suppressed later with `unsuppress()`.
+
+### Decay — Auto-Suppression of Low-Value Entries
+
+`AlwaysRemember.decay()` scans all non-suppressed entries and auto-suppresses
+those that have been retrieved often but rarely accepted:
+
+- `hit_count >= min_hits` (default 5) — the entry has been seen enough
+- `accept_count / hit_count < (1 - max_reject_ratio)` (default < 0.2) —
+  almost never accepted
+
+This ensures that noisy, low-value entries are silenced over time without
+manual intervention.
+
+### Acceptance Tracking
+
+- `record_hit(entry_id)` — called when an entry is retrieved; increments
+  `hit_count` and updates `last_accessed_at`
+- `record_accept(entry_id)` — called when the user accepts a task outcome
+  that used this memory; increments `accept_count` and boosts
+  `usefulness_score`
+
+### Always Remember API
+
+| Method | Purpose |
+|--------|---------|
+| `remember(content, category, tags, …)` | Store a new typed entry |
+| `promote_outcome(content, …)` | Promote accepted outcome; increment on duplicate |
+| `suppress(entry_id)` | Mark entry as suppressed |
+| `unsuppress(entry_id)` | Remove suppression |
+| `decay(min_hits, max_reject_ratio)` | Auto-suppress noisy entries |
+| `record_hit(entry_id)` | Track retrieval |
+| `record_accept(entry_id)` | Track acceptance |
+| `forget(entry_id)` | Permanently delete |
+| `list_entries(include_suppressed=)` | List entries |
+| `search(query)` | Search by content/tag |
+
+### Slash Commands
+
+| Command | Purpose |
+|---------|---------|
+| `/remember` | List entries with ID, score, hits, accepts |
+| `/remember <text>` | Store a new entry |
+| `/remember promote <text>` | Promote an outcome |
+| `/remember suppress <id>` | Suppress an entry |
+| `/remember unsuppress <id>` | Un-suppress an entry |
+| `/remember decay` | Auto-suppress noisy entries |
+| `/remember why <task>` | Explain retrieval for a task |
 
 ---
 
