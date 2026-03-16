@@ -170,6 +170,10 @@ Durable annotations stored as JSON in `.clawsmith/always_remember/`. Supports:
 
 ## OpenClaw Integration Design
 
+OpenClaw is treated as an **optional external** skill/tool ecosystem. ClawSmith
+is fully functional without it — every interaction is governed by explicit config
+toggles that default to *disabled / restrictive*.
+
 ### Architecture
 
 ```
@@ -183,12 +187,67 @@ ClawSmith ←→ OpenClawSkillBridge ←→ OpenClaw Gateway
 | **Sync** | `sync_from_gateway()` | `OpenClawSkillBridge` |
 | **Register** | `register_skills_with_gateway()` | `OpenClawSkillBridge` |
 
+### Config Toggles
+
+All toggles live under the `openclaw` section of `settings.yaml`:
+
+| Toggle | Default | Purpose |
+|--------|---------|---------|
+| `enabled` | `false` | Master switch — the entire bridge is inert when false |
+| `allow_skill_import` | `false` | Permit importing skills from the OpenClaw gateway |
+| `allow_external_execution` | `false` | Permit executing imported (external) skills locally |
+| `require_approval_for_external_writes` | `true` | Require explicit approval before an external skill writes files |
+
+The bridge also requires `gateway_url` to be non-empty; `enabled: true` with an
+empty `gateway_url` is treated as unavailable.
+
+Toggles can also be set via environment variables:
+
+```
+CLAWSMITH_OPENCLAW__ENABLED=true
+CLAWSMITH_OPENCLAW__ALLOW_SKILL_IMPORT=true
+CLAWSMITH_OPENCLAW__ALLOW_EXTERNAL_EXECUTION=true
+CLAWSMITH_OPENCLAW__REQUIRE_APPROVAL_FOR_EXTERNAL_WRITES=false
+```
+
+### Typed Adapter Layer
+
+Imported skills carry extra metadata that distinguishes them from local skills:
+
+| Field on `SkillDefinition` | Purpose |
+|---|---|
+| `source_type = openclaw_imported` | Marks the skill as external |
+| `is_external` (property) | Convenience check — `True` when `source_type` is `openclaw_imported` |
+| `origin_url` | URL on the OpenClaw gateway this skill was imported from |
+| `requires_approval` | Stamped from `require_approval_for_external_writes` at import time |
+| `tags` includes `"external"` | For filtering and display |
+
 ### Safety
 
-- OpenClaw is **optional** — ClawSmith works fully without it
-- Imported skills are typed as `openclaw_imported` source
-- Capability checks run before skill sync
-- Config toggles control sharing: `share_api_keys`, `share_local_models`
+- OpenClaw is **optional** — absent config results in graceful no-op behaviour
+  throughout the bridge, executor, and runtime
+- Every bridge method checks `enabled` and the relevant toggle before doing work
+- Imported skills are typed as `openclaw_imported` with `is_external = True`
+- When `allow_external_execution` is off, imported skills are persisted but
+  automatically disabled so the resolver never selects them
+- The executor blocks external skills unless `allow_external_execution` is on
+- When `require_approval_for_external_writes` is on, the executor refuses to
+  execute an external skill that has file targets or commands unless an
+  `approval_callback` is provided and returns `True`
+- Dry-run mode bypasses the approval check (no actual writes occur)
+- Existing sharing toggles (`share_api_keys`, `share_local_models`) are preserved
+
+### Execution Guard Order
+
+When the executor receives an external skill, it applies guards in this order:
+
+1. **External-skill toggle** — is `openclaw.allow_external_execution` true?
+2. **External-write approval** — does the skill require approval, and has it been granted?
+3. **Scope contract** — are the file targets within scope?
+4. **Dry-run short-circuit** — return preview output without side effects
+5. **Safe-mode command allowlist** — are the commands in `allowed_commands`?
+
+A local skill (any `source_type` other than `openclaw_imported`) skips steps 1–2.
 
 ---
 
@@ -198,10 +257,12 @@ ClawSmith ←→ OpenClawSkillBridge ←→ OpenClaw Gateway
 
 All skill execution passes through:
 
-1. **Scope check** — `check_skill_scope()` verifies file targets against scope contracts
-2. **Command allowlist** — `check_command_allowed()` verifies commands against `execution.allowed_commands`
-3. **Safe mode** — when enabled, blocks non-allowlisted commands
-4. **Dry run** — executes skill logic but produces no side effects
+1. **External-skill toggle check** — blocks external skills when `openclaw.allow_external_execution` is off
+2. **External-write approval check** — blocks external skills that want to write without approval
+3. **Scope check** — `check_skill_scope()` verifies file targets against scope contracts
+4. **Command allowlist** — `check_command_allowed()` verifies commands against `execution.allowed_commands`
+5. **Safe mode** — when enabled, blocks non-allowlisted commands
+6. **Dry run** — executes skill logic but produces no side effects
 
 ### Existing Systems Preserved
 

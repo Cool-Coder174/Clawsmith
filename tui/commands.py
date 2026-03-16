@@ -608,19 +608,25 @@ def _cmd_openclaw(session: ChatSession, _args: list[str]) -> None:
         from skills.openclaw_adapter import OpenClawSkillBridge
 
         bridge = OpenClawSkillBridge(session.repo_path)
+        status = bridge.get_status()
+
         rows: list[tuple[str, str]] = [
-            ("Available", "Yes" if bridge.is_available else "No"),
+            ("Enabled", "Yes" if status["enabled"] else "No"),
+            ("Gateway URL", status["gateway_url"]),
+            ("Is Available", "Yes" if status["is_available"] else "No"),
+            ("Allow Skill Import", "Yes" if status["allow_skill_import"] else "No"),
+            ("Allow External Execution", "Yes" if status["allow_external_execution"] else "No"),
+            ("Require Approval for Writes", "Yes" if status["require_approval_for_external_writes"] else "No"),
         ]
 
         try:
             from config.config_loader import get_config
 
             cfg = get_config()
-            rows.append(("Gateway URL", cfg.openclaw.gateway_url or "(not set)"))
             rows.append(("Skill Name", cfg.openclaw.skill_name))
             rows.append(("Auto Register", str(cfg.openclaw.auto_register)))
         except Exception:
-            rows.append(("Config", "Could not load"))
+            pass
 
         session.renderer.key_value_table("OpenClaw Status", rows)
     except Exception as exc:

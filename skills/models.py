@@ -40,8 +40,15 @@ class SkillDefinition(BaseModel):
     inferred_commands: list[str] = Field(default_factory=list)
     inferred_file_targets: list[str] = Field(default_factory=list)
     generation_evidence: list[str] = Field(default_factory=list)
+    origin_url: str = ""
+    requires_approval: bool = False
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+    @property
+    def is_external(self) -> bool:
+        """True when the skill was imported from an external source."""
+        return self.source_type == SourceType.openclaw_imported
 
 
 class SkillScore(BaseModel):

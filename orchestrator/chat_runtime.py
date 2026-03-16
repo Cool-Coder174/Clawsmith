@@ -226,9 +226,23 @@ class ChatRuntime:
             log.debug("Stack detection failed (non-fatal): %s", exc)
 
     def _load_skills(self) -> None:
-        """Load skills from disk into the registry."""
+        """Load skills from disk and optionally import OpenClaw skills."""
         registry = self._get_registry()
         registry.load_from_disk()
+
+        try:
+            from skills.openclaw_adapter import OpenClawSkillBridge
+
+            bridge = OpenClawSkillBridge(self.state.workspace_root)
+            if bridge.import_allowed:
+                imported = bridge.sync_from_gateway()
+                for skill in imported:
+                    registry.register(skill, persist=True)
+                if imported:
+                    log.info("Imported %d skill(s) from OpenClaw", len(imported))
+        except Exception as exc:
+            log.debug("OpenClaw skill import skipped: %s", exc)
+
         self.state.loaded_skills = registry.list_all()
 
     def _get_registry(self) -> Any:

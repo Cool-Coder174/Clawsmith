@@ -63,6 +63,7 @@ mcp_server:
   transport: sse
 
 openclaw:
+  enabled: false              # master toggle — set true to activate OpenClaw integration
   skill_name: ClawSmith
   mcp_endpoint: "http://127.0.0.1:8765/sse"
   webhook_secret: ""          # set via env OPENCLAW_WEBHOOK_SECRET
@@ -75,6 +76,9 @@ openclaw:
   task_timeout: 600           # max seconds for a forwarded task
   share_api_keys: true        # let OpenClaw route completions through our API keys
   share_local_models: true    # let OpenClaw use our local Ollama models
+  allow_skill_import: false   # allow importing skills from the OpenClaw gateway
+  allow_external_execution: false          # allow executing OpenClaw-imported skills
+  require_approval_for_external_writes: true  # require explicit approval before an external skill writes files
 
 agents:
   default_agent: null              # null = auto-select best available CLI
