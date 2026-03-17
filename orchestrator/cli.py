@@ -17,7 +17,7 @@ console = Console()
 
 @click.group()
 def cli() -> None:
-    """Traycer — spec-first AI orchestration: plan, execute, verify."""
+    """ClawSmith — CLI-first orchestration and deployment layer for coding agents."""
 
 
 @cli.command("run-task")
@@ -209,6 +209,340 @@ _YOLO_LIFECYCLE = [
 ]
 
 
+_FORGE_LIFECYCLE = [
+    ("deployed", "Deploy"),
+    ("planning", "Spec"),
+    ("executing", "Execute"),
+    ("verifying", "Verify"),
+    ("complete", "Complete"),
+]
+
+
+@cli.command("forge")
+@click.option("--goal", required=True, help="What you want to build or change.")
+@click.option("--repo-path", default=".", help="Path to the repository root.")
+@click.option(
+    "--tier", type=click.Choice(["quick", "full", "epic"]), default=None,
+    help="Spec detail level. Auto-selects based on complexity if omitted.",
+)
+@click.option(
+    "--mode", type=click.Choice(["plan", "execute", "forge"]), default="forge",
+    help="plan=spec only, execute=spec+run+verify, forge=full loop with auto-fix.",
+)
+@click.option("--model", default=None, help="Ollama model for spec generation and verification.")
+@click.option("--max-retries", default=2, type=int, help="Max retries per YOLO phase.")
+@click.option("--max-fixes", default=2, type=int, help="Max fix loops after verification failure.")
+@click.option("--agent", default=None, help="Agent CLI id for execution.")
+@click.option("--dry-run", is_flag=True, help="Generate spec and plan but don't execute.")
+def forge(
+    goal: str,
+    repo_path: str,
+    tier: str | None,
+    mode: str,
+    model: str | None,
+    max_retries: int,
+    max_fixes: int,
+    agent: str | None,
+    dry_run: bool,
+) -> None:
+    """Forge — full spec-driven development loop.
+
+    Generates an LLM-powered implementation spec, executes it through
+    coding agents, verifies the result against the spec, and auto-fixes
+    issues. The complete Traycer-style pipeline, running locally.
+
+    \b
+    Modes:
+      plan    - generate spec only, save for review
+      execute - spec > agent execution > verify (no auto-fix)
+      forge   - full loop: spec > exec > verify > fix > re-verify
+    """
+    from rich.live import Live
+
+    from orchestrator.agent_status import StatusTracker
+    from orchestrator.forge import ForgeEngine, ForgeMode
+    from orchestrator.logging_setup import setup_logging
+    from orchestrator.schemas import YoloConfig
+    from orchestrator.spec_generator import SpecTier
+
+    setup_logging()
+    tracker = StatusTracker()
+
+    forge_mode = ForgeMode(mode)
+    if dry_run:
+        forge_mode = ForgeMode.plan
+
+    spec_tier = SpecTier(tier) if tier else None
+    yolo_cfg = YoloConfig(
+        max_retries=max_retries,
+        agent_target=agent,
+        dry_run=dry_run,
+    )
+
+    engine_kwargs = {}
+    if model:
+        engine_kwargs["spec_model"] = model
+        engine_kwargs["verify_model"] = model
+
+    engine = ForgeEngine(max_fix_loops=max_fixes, **engine_kwargs)
+
+    console.print()
+    console.print(Panel(
+        f"[bold cyan]Forge[/bold cyan]  {goal}\n"
+        f"[dim]mode={forge_mode.value}  max_fixes={max_fixes}[/dim]",
+        expand=False,
+    ))
+    console.print()
+
+    _PHASE_IDX = {k: i for i, (k, _) in enumerate(_FORGE_LIFECYCLE)}
+
+    def _build_strip():
+        from rich.text import Text
+        phase = tracker.phase.value
+        failed = phase == "failed"
+        idx = _PHASE_IDX.get(phase, -1)
+        line = Text("  ")
+        for i, (key, label) in enumerate(_FORGE_LIFECYCLE):
+            if i > 0:
+                line.append(" → ", style="dim")
+            if failed and i == idx:
+                line.append(f"[{label}]", style="bold red")
+            elif i < idx:
+                line.append(f"✓ {label}", style="green")
+            elif i == idx:
+                line.append(f"● {label}", style="bold cyan")
+            else:
+                line.append(f"○ {label}", style="dim")
+        latest = tracker.events[-1].step if tracker.events else ""
+        if latest:
+            line.append(f"  — {latest}", style="dim")
+        return line
+
+    with Live(_build_strip(), console=console, refresh_per_second=10, transient=True) as live:
+        tracker.on_status(lambda _ev: live.update(_build_strip()))
+        result = asyncio.run(
+            engine.run(
+                goal,
+                repo_path,
+                mode=forge_mode,
+                spec_tier=spec_tier,
+                yolo_config=yolo_cfg,
+                status=tracker,
+            )
+        )
+
+    console.print(_build_strip())
+    console.print()
+
+    # Print spec summary
+    if result.spec:
+        spec = result.spec
+        console.print(f"[bold]Spec:[/bold] {spec.id} ({spec.tier.value})")
+        console.print(f"  File changes: {len(spec.file_changes)}")
+        console.print(f"  Phases:       {len(spec.phases)}")
+        console.print(f"  Risks:        {len(spec.risks)}")
+        if result.spec_path:
+            console.print(f"  Saved to:     {result.spec_path}")
+        console.print()
+
+    # Print execution result
+    if result.execution_result:
+        er = result.execution_result
+        console.print(f"[bold]Execution:[/bold] {'✅ success' if er.success else '❌ failed'}")
+        console.print(f"  Phases: {er.completed_phases}/{er.total_phases} completed")
+        if er.failed_phases:
+            console.print(f"  Failed: {er.failed_phases}")
+        console.print()
+
+    # Print verification results
+    if result.verification_results:
+        for i, v in enumerate(result.verification_results):
+            label = "Initial" if i == 0 else f"After fix {i}"
+            passed_style = "green" if v.passed else "red"
+            console.print(
+                f"[bold]Verification ({label}):[/bold] "
+                f"[{passed_style}]{v.score:.0%}[/{passed_style}]  "
+                f"🔴{v.critical_count} 🟠{v.major_count}"
+            )
+        console.print()
+
+    # Final verdict
+    if result.success:
+        console.print("[bold green]Forge complete ✅[/bold green]")
+    else:
+        console.print(f"[bold red]Forge failed:[/bold red] {result.error or 'unknown'}")
+
+    console.print(f"  Duration:    {result.duration_seconds:.1f}s")
+    console.print(f"  Fix attempts: {result.fix_attempts}")
+
+    if not result.success:
+        sys.exit(1)
+
+
+@cli.command("spec-refine")
+@click.option("--spec-id", required=True, help="Spec ID to refine.")
+@click.option("--feedback", required=True, help="What to change about the spec.")
+@click.option("--repo-path", default=".", help="Path to the repository root.")
+@click.option("--model", default=None, help="Ollama model name.")
+def spec_refine(spec_id: str, feedback: str, repo_path: str, model: str | None) -> None:
+    """Refine an existing spec with feedback.
+
+    Takes a generated spec and user feedback, then produces an updated
+    version that addresses the feedback while preserving the original intent.
+    """
+    import json as json_mod
+    from orchestrator.logging_setup import setup_logging
+    from orchestrator.spec_generator import GeneratedSpec, SpecGenerator
+
+    setup_logging()
+    root = Path(repo_path).resolve()
+    specs_dir = root / ".clawsmith" / "specs"
+    spec_json = specs_dir / f"{spec_id}.json"
+
+    if not spec_json.exists():
+        console.print(f"[bold red]Spec not found:[/bold red] {spec_json}")
+        sys.exit(1)
+
+    original = GeneratedSpec.model_validate_json(spec_json.read_text(encoding="utf-8"))
+
+    console.print()
+    console.print(Panel(
+        f"[bold cyan]Spec Refinement[/bold cyan]\n"
+        f"Original: {spec_id}\n"
+        f"Feedback: {feedback[:100]}",
+        expand=False,
+    ))
+
+    gen_kwargs = {}
+    if model:
+        gen_kwargs["model"] = model
+    generator = SpecGenerator(**gen_kwargs)
+
+    # Build refinement prompt
+    refinement_goal = (
+        f"Refine the following implementation spec based on feedback.\n\n"
+        f"## Original Goal\n{original.goal}\n\n"
+        f"## Current Spec\n{original.to_markdown()}\n\n"
+        f"## Feedback\n{feedback}\n\n"
+        f"Produce an updated spec that addresses the feedback while "
+        f"preserving the original intent. Keep the same tier ({original.tier.value})."
+    )
+
+    with console.status("[cyan]Refining spec via Ollama..."):
+        refined = asyncio.run(
+            generator.generate(refinement_goal, tier=original.tier)
+        )
+
+    # Save with new ID but reference the original
+    refined.goal = original.goal  # Keep original goal
+    refined_path = specs_dir / f"{refined.id}.md"
+    refined_path.write_text(refined.to_markdown(), encoding="utf-8")
+    json_path = specs_dir / f"{refined.id}.json"
+    json_path.write_text(refined.model_dump_json(indent=2), encoding="utf-8")
+
+    try:
+        console.print(Syntax(refined.to_markdown(), "markdown", theme="monokai"))
+    except (UnicodeEncodeError, Exception):
+        console.print(Panel(refined.to_markdown(), title="Refined Spec", border_style="cyan"))
+
+    console.print()
+    console.print(f"[bold green]Spec refined[/bold green] in {refined.generation_time_seconds:.1f}s")
+    console.print(f"  Original: {spec_id}")
+    console.print(f"  New ID:   {refined.id}")
+    console.print(f"  Saved to: {refined_path}")
+
+
+@cli.command("spec-exec")
+@click.option("--spec-id", required=True, help="Spec ID to execute.")
+@click.option("--repo-path", default=".", help="Path to the repository root.")
+@click.option("--agent", default=None, help="Agent CLI id for execution.")
+@click.option("--max-retries", default=2, type=int, help="Max retries per phase.")
+@click.option("--verify/--no-verify", default=True, help="Run semantic verification after execution.")
+@click.option("--model", default=None, help="Ollama model for verification.")
+def spec_exec(
+    spec_id: str,
+    repo_path: str,
+    agent: str | None,
+    max_retries: int,
+    verify: bool,
+    model: str | None,
+) -> None:
+    """Execute an existing spec through the YOLO engine.
+
+    Takes a previously generated spec and runs it through the agent
+    execution pipeline, optionally verifying the result.
+    """
+    import json as json_mod
+    from rich.live import Live
+
+    from orchestrator.agent_status import StatusTracker
+    from orchestrator.logging_setup import setup_logging
+    from orchestrator.schemas import YoloConfig
+    from orchestrator.spec_generator import GeneratedSpec
+    from orchestrator.verifier import SpecVerifier
+    from orchestrator.yolo import YoloEngine
+
+    setup_logging()
+    root = Path(repo_path).resolve()
+    specs_dir = root / ".clawsmith" / "specs"
+    spec_json = specs_dir / f"{spec_id}.json"
+
+    if not spec_json.exists():
+        console.print(f"[bold red]Spec not found:[/bold red] {spec_json}")
+        sys.exit(1)
+
+    spec_obj = GeneratedSpec.model_validate_json(spec_json.read_text(encoding="utf-8"))
+    plan = spec_obj.to_yolo_plan(repo_path)
+
+    console.print()
+    console.print(Panel(
+        f"[bold cyan]Spec Execution[/bold cyan]  {spec_id}\n"
+        f"Goal: {spec_obj.goal[:80]}\n"
+        f"Phases: {len(plan.phases)}  Files: {len(spec_obj.file_changes)}",
+        expand=False,
+    ))
+    console.print()
+
+    tracker = StatusTracker()
+    cfg = YoloConfig(
+        max_retries=max_retries,
+        agent_target=agent,
+    )
+
+    strip_fn = lambda: _yolo_build_strip(tracker, _YOLO_LIFECYCLE)
+
+    with Live(strip_fn(), console=console, refresh_per_second=10, transient=True) as live:
+        tracker.on_status(lambda _ev: live.update(strip_fn()))
+        result = asyncio.run(
+            YoloEngine().execute(spec_obj.goal, repo_path, config=cfg, status=tracker)
+        )
+
+    console.print(strip_fn())
+    console.print()
+    _yolo_print_results(result, cfg)
+
+    # Verification
+    if verify and result.success:
+        console.print()
+        console.print("[bold cyan]Running semantic verification...[/bold cyan]")
+
+        verify_kwargs = {}
+        if model:
+            verify_kwargs["model"] = model
+        verifier = SpecVerifier(**verify_kwargs)
+
+        v_result, v_path = asyncio.run(
+            verifier.verify_and_save(spec_obj, repo_path)
+        )
+
+        verdict_style = "bold green" if v_result.passed else "bold red"
+        verdict_text = "PASSED" if v_result.passed else "FAILED"
+        console.print(f"[{verdict_style}]Verdict: {verdict_text}[/{verdict_style}]  Score: {v_result.score:.0%}")
+        console.print(f"  🔴 Critical: {v_result.critical_count}")
+        console.print(f"  🟠 Major:    {v_result.major_count}")
+        console.print(f"  Report:      {v_path}")
+
+
 @cli.command("yolo")
 @click.option("--goal", required=True, help="High-level software engineering goal.")
 @click.option("--repo-path", default=".", help="Path to the repository root.")
@@ -318,6 +652,237 @@ def resume(
     except FileNotFoundError as exc:
         console.print(f"[bold red]Cannot resume:[/bold red] {exc}")
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Plan / Exec / Status — first-class spec-driven workflow
+# ---------------------------------------------------------------------------
+
+
+@cli.command("plan")
+@click.option("--goal", required=True, help="High-level goal to decompose into a plan.")
+@click.option("--repo-path", default=".", help="Path to the repository root.")
+@click.option("--skip-planning", is_flag=True, help="Skip design phase insertion.")
+def plan_cmd(
+    goal: str,
+    repo_path: str,
+    skip_planning: bool,
+) -> None:
+    """Decompose a goal into a phased plan and save it as a markdown artifact.
+
+    Audits the repo, classifies the task, decomposes into phases with
+    acceptance criteria, then persists the plan under .clawsmith/plans/.
+    """
+    from orchestrator.logging_setup import setup_logging
+    from orchestrator.plan_writer import write_plan, load_status
+    from orchestrator.planner import TaskPlanner
+    from routing.classifier import TaskClassifier
+    from tools.context_packer import ContextPacker
+    from tools.repo_auditor import RepoAuditor
+    from tools.repo_mapper import RepoMapper
+
+    setup_logging()
+    root = Path(repo_path).resolve()
+
+    console.print()
+    console.print(Panel(f"[bold cyan]Plan[/bold cyan]  {goal}", expand=False))
+
+    with console.status("[cyan]Auditing repository..."):
+        audit = RepoAuditor(root).audit()
+        repo_map = RepoMapper(root).map()
+        context = ContextPacker(root).pack(audit, repo_map, goal)
+        classification = TaskClassifier().classify(goal, context)
+
+    console.print(
+        f"[dim]  Complexity: {classification.complexity_score:.2f}  "
+        f"Type: {classification.task_type.value}  "
+        f"Files: ~{classification.files_likely_touched}[/dim]"
+    )
+
+    planner = TaskPlanner()
+    yolo_plan = planner.decompose(
+        goal, str(root),
+        context=context,
+        classification=classification,
+        skip_planning=skip_planning,
+    )
+
+    plan_dir = write_plan(yolo_plan, root)
+    console.print()
+
+    table = Table(title="Execution Plan", show_lines=True)
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Phase", style="cyan", min_width=20)
+    table.add_column("Type", min_width=14)
+    table.add_column("Complexity", width=10)
+    table.add_column("Files", width=5)
+    table.add_column("Criteria", min_width=30)
+
+    for phase in yolo_plan.phases:
+        criteria_str = "; ".join(phase.acceptance_criteria[:2])
+        if len(phase.acceptance_criteria) > 2:
+            criteria_str += f" (+{len(phase.acceptance_criteria) - 2})"
+        table.add_row(
+            str(phase.index + 1),
+            phase.title,
+            phase.task_type.value,
+            f"{phase.estimated_complexity:.0%}",
+            str(len(phase.files_in_scope)),
+            criteria_str,
+        )
+
+    console.print(table)
+    console.print()
+    console.print(f"[bold green]Plan saved[/bold green]")
+    console.print(f"  ID:       {yolo_plan.id}")
+    console.print(f"  Phases:   {len(yolo_plan.phases)}")
+    console.print(f"  Bucket:   {yolo_plan.complexity.bucket.value}")
+    console.print(f"  Saved to: {plan_dir}")
+    console.print()
+    console.print(
+        f"[dim]Next: clawsmith exec --plan-id {yolo_plan.id} --repo-path {repo_path}[/dim]"
+    )
+
+
+@cli.command("exec")
+@click.option("--plan-id", required=True, help="Plan ID to execute.")
+@click.option("--repo-path", default=".", help="Path to the repository root.")
+@click.option("--phase", "phase_num", default=None, type=int, help="Execute a specific phase (1-based).")
+@click.option("--agent", default=None, help="Agent CLI id (cursor, claude_code, gemini_cli).")
+@click.option("--max-retries", default=2, type=int, help="Max retries per phase.")
+@click.option("--dry-run", is_flag=True, help="Skip actual execution.")
+@click.option("--no-pause", is_flag=True, help="Abort instead of pausing on failure.")
+def exec_cmd(
+    plan_id: str,
+    repo_path: str,
+    phase_num: int | None,
+    agent: str | None,
+    max_retries: int,
+    dry_run: bool,
+    no_pause: bool,
+) -> None:
+    """Execute a saved plan through the YOLO engine.
+
+    Loads the plan from .clawsmith/plans/<plan-id>/ and runs it through
+    the phase execution pipeline. Optionally targets a single phase.
+    """
+    from rich.live import Live
+
+    from orchestrator.agent_status import StatusTracker
+    from orchestrator.logging_setup import setup_logging
+    from orchestrator.plan_writer import load_plan, update_status
+    from orchestrator.schemas import YoloConfig
+    from orchestrator.yolo import YoloEngine
+
+    setup_logging()
+    root = Path(repo_path).resolve()
+
+    try:
+        yolo_plan = load_plan(plan_id, root)
+    except FileNotFoundError as exc:
+        console.print(f"[bold red]Plan not found:[/bold red] {exc}")
+        console.print("[dim]Run 'clawsmith status' to see available plans.[/dim]")
+        sys.exit(1)
+
+    if phase_num is not None:
+        if phase_num < 1 or phase_num > len(yolo_plan.phases):
+            console.print(
+                f"[bold red]Invalid phase:[/bold red] {phase_num} "
+                f"(plan has {len(yolo_plan.phases)} phases)"
+            )
+            sys.exit(1)
+        phases_to_run = [yolo_plan.phases[phase_num - 1]]
+        console.print(
+            Panel(
+                f"[bold cyan]Exec Phase {phase_num}[/bold cyan]  "
+                f"{phases_to_run[0].title}  (plan={plan_id})",
+                expand=False,
+            )
+        )
+    else:
+        phases_to_run = yolo_plan.phases
+        console.print(
+            Panel(
+                f"[bold cyan]Exec Plan[/bold cyan]  {yolo_plan.goal}  "
+                f"({len(phases_to_run)} phases)",
+                expand=False,
+            )
+        )
+
+    cfg = YoloConfig(
+        max_retries=max_retries,
+        dry_run=dry_run,
+        agent_target=agent,
+        pause_on_failure=not no_pause,
+    )
+
+    tracker = StatusTracker()
+
+    strip_fn = lambda: _yolo_build_strip(tracker, _YOLO_LIFECYCLE)
+
+    with Live(strip_fn(), console=console, refresh_per_second=10, transient=True) as live:
+        tracker.on_status(lambda _ev: live.update(strip_fn()))
+        result = asyncio.run(
+            YoloEngine().execute(
+                yolo_plan.goal, repo_path, config=cfg, status=tracker,
+            )
+        )
+
+    console.print(strip_fn())
+    console.print()
+
+    update_status(
+        plan_id, root,
+        run_id=tracker.run_id,
+        phase_status="completed" if result.success else "failed",
+    )
+
+    _yolo_print_results(result, cfg)
+
+
+@cli.command("status")
+@click.option("--repo-path", default=".", help="Path to the repository root.")
+def status_cmd(repo_path: str) -> None:
+    """Show active plans and their execution state."""
+    from orchestrator.plan_writer import list_plans
+
+    root = Path(repo_path).resolve()
+    plans = list_plans(root)
+
+    if not plans:
+        console.print("[dim]No plans found. Run 'clawsmith plan --goal \"...\"' first.[/dim]")
+        return
+
+    import time as time_mod
+
+    table = Table(title="ClawSmith Plans", show_lines=True)
+    table.add_column("ID", style="cyan", min_width=14)
+    table.add_column("Goal", min_width=30)
+    table.add_column("Phases", width=7)
+    table.add_column("Status", min_width=10)
+    table.add_column("Created", min_width=19)
+
+    for p in plans:
+        created = (
+            time_mod.strftime("%Y-%m-%d %H:%M", time_mod.localtime(p["created_at"]))
+            if p["created_at"] else "-"
+        )
+        status_style = {
+            "planned": "dim",
+            "running": "bold cyan",
+            "completed": "green",
+            "failed": "bold red",
+            "paused": "yellow",
+        }.get(p["status"], "white")
+        table.add_row(
+            p["id"],
+            p["goal"][:50] + ("..." if len(p["goal"]) > 50 else ""),
+            str(p["phases"]),
+            f"[{status_style}]{p['status']}[/{status_style}]",
+            created,
+        )
+
+    console.print(table)
 
 
 @cli.command("spec")
@@ -515,7 +1080,7 @@ def run_job(job_file: str, agent: str | None) -> None:
     effective_agent = agent or job.agent_target
     agent_id = "none"
     agent_invocation = ""
-    agent_display_name = "Traycer"
+    agent_display_name = "ClawSmith"
 
     try:
         config = get_config()
@@ -565,7 +1130,7 @@ def run_job(job_file: str, agent: str | None) -> None:
 
 @cli.command("start-server")
 def start_server() -> None:
-    """Start the Traycer MCP server."""
+    """Start the ClawSmith MCP server."""
     from config.config_loader import get_config
     from orchestrator.logging_setup import setup_logging
 
@@ -592,7 +1157,7 @@ def onboard() -> None:
 
 @cli.command("doctor")
 def doctor() -> None:
-    """Run preflight checks and report Traycer readiness."""
+    """Run preflight checks and report ClawSmith readiness."""
     from orchestrator.doctor import run_doctor
 
     ok = run_doctor()
@@ -622,7 +1187,7 @@ def smoke_test() -> None:
     help="Also start the OpenClaw webhook receiver alongside the MCP server.",
 )
 def start(host: str | None, port: int | None, webhook: bool) -> None:
-    """Start Traycer (MCP server + optional webhook receiver)."""
+    """Start ClawSmith (MCP server + optional webhook receiver)."""
     import threading
 
     from config.config_loader import get_config
@@ -634,7 +1199,7 @@ def start(host: str | None, port: int | None, webhook: bool) -> None:
     effective_port = port or cfg.mcp_server.port
 
     console.print(
-        f"[bold cyan]Traycer[/bold cyan] starting on "
+        f"[bold cyan]ClawSmith[/bold cyan] starting on "
         f"{effective_host}:{effective_port} "
         f"(transport={cfg.mcp_server.transport})"
     )
@@ -699,7 +1264,7 @@ def openclaw_webhook(host: str | None, port: int | None) -> None:
 @click.option("--output", default="SKILL.md", help="Output path for SKILL.md.")
 @click.option("--remote", is_flag=True, help="Also push manifest to OpenClaw gateway.")
 def openclaw_register(output: str, remote: bool) -> None:
-    """Register Traycer as an OpenClaw skill."""
+    """Register ClawSmith as an OpenClaw skill."""
     from orchestrator.logging_setup import setup_logging
     from providers.openclaw_adapter import OpenClawAdapter
 
@@ -813,7 +1378,7 @@ def openclaw_manifest() -> None:
 @cli.command("chat")
 @click.option("--repo-path", default=".", help="Repository to work with.")
 def chat(repo_path: str) -> None:
-    """Start an interactive Traycer session (agentic TUI)."""
+    """Start an interactive ClawSmith session (agentic TUI)."""
     from tui.session import ChatSession
 
     ChatSession(repo_path=repo_path).run()
@@ -825,7 +1390,7 @@ def chat(repo_path: str) -> None:
 
 @cli.group("skills")
 def skills_group() -> None:
-    """Manage Traycer skills — list, generate, and inspect."""
+    """Manage ClawSmith skills — list, generate, and inspect."""
 
 
 @skills_group.command("list")
@@ -839,7 +1404,7 @@ def skills_list(repo_path: str) -> None:
     skills = runtime.list_skills()
 
     if not skills:
-        console.print("[dim]No skills found. Run 'traycer skills generate' first.[/dim]")
+        console.print("[dim]No skills found. Run 'clawsmith skills generate' first.[/dim]")
         return
 
     table = Table(title="Loaded Skills", show_lines=True)
@@ -945,7 +1510,7 @@ def quickstart() -> None:
         from recommendation.engine import RecommendationEngine
         from repo_graph.linker import RepoLinker
 
-        console.print(Panel("[bold cyan]Traycer Quickstart[/bold cyan]", expand=False))
+        console.print(Panel("[bold cyan]ClawSmith Quickstart[/bold cyan]", expand=False))
 
         # 1 - Hardware detection
         console.print("\n[bold]Step 1:[/bold] Detecting hardware ...")
@@ -1019,7 +1584,7 @@ def quickstart() -> None:
             console.print(f"  {t.name}: {status} {t.version or ''}")
 
         # 8 - Offer to link current repo
-        if click.confirm("Link the current repository to Traycer?", default=True):
+        if click.confirm("Link the current repository to ClawSmith?", default=True):
             console.print("\n[bold]Step 5:[/bold] Linking repository ...")
             graph_path = _REPO_ROOT / "clawsmith" / "repo-graph.json"
             linker = RepoLinker(config_path=graph_path)
@@ -1034,9 +1599,9 @@ def quickstart() -> None:
         # 10 - Welcome summary
         console.print(
             Panel(
-                "[bold green]Traycer is ready![/bold green]\n"
-                "Run [cyan]traycer doctor[/cyan] to verify, or "
-                "[cyan]traycer plan --goal '...'[/cyan] to get started.",
+                "[bold green]ClawSmith is ready![/bold green]\n"
+                "Run [cyan]clawsmith doctor[/cyan] to verify, or "
+                "[cyan]clawsmith run-task --task '...'[/cyan] to get started.",
                 title="Setup Complete",
                 expand=False,
             )
@@ -1239,7 +1804,7 @@ def install_model(model_id: str | None, target_path: str | None, runtime: str) -
 @click.option("--role", default="", help="Repo role: primary, shared-lib, cli, service.")
 @click.option("--description", default="", help="Short description.")
 def link_repo(repo_path: str, role: str, description: str) -> None:
-    """Add a repository to the Traycer workspace graph."""
+    """Add a repository to the ClawSmith workspace graph."""
     try:
         from repo_graph.linker import RepoLinker
 
@@ -1347,7 +1912,7 @@ def memory_show() -> None:
             table.add_row("Repos", str(len(arch.repos)))
             console.print(table)
         else:
-            console.print("[dim]No architecture data. Run 'traycer memory sync' first.[/dim]")
+            console.print("[dim]No architecture data. Run 'clawsmith memory sync' first.[/dim]")
 
         if prefs:
             console.print("\n[bold]Preferences:[/bold]")
@@ -1500,7 +2065,7 @@ def rollback(proposal_id: str) -> None:
 )
 @click.option("--force", is_flag=True, help="Discard local changes before pulling.")
 def update(branch: str | None, force: bool) -> None:
-    """Pull the latest source from Git and re-install Traycer."""
+    """Pull the latest source from Git and re-install ClawSmith."""
     import shutil
     import subprocess
 
@@ -1516,7 +2081,7 @@ def update(branch: str | None, force: bool) -> None:
         )
         sys.exit(1)
 
-    console.print("[bold cyan]Traycer self-update[/bold cyan]\n")
+    console.print("[bold cyan]ClawSmith self-update[/bold cyan]\n")
 
     # 1 — Save current version for comparison
     try:
@@ -1612,5 +2177,5 @@ def update(branch: str | None, force: bool) -> None:
 
     console.print(
         "\n[bold green]Update complete.[/bold green]  "
-        "Restart any running Traycer sessions to use the new version."
+        "Restart any running ClawSmith sessions to use the new version."
     )

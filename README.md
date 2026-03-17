@@ -83,20 +83,47 @@ clawsmith smoke-test    # quick integration check across all subsystems
 ## ⚡ Quick Usage
 
 ```bash
+# === FORGE — Spec-Driven Development (like Traycer, but local) ===
+
+# Full loop: spec → execute → verify → auto-fix
+clawsmith forge --goal "Add JWT authentication to the API"
+
+# Generate spec only (review before executing)
+clawsmith forge --goal "Rewrite auth system" --mode plan
+
+# Spec + execute + verify (no auto-fix)
+clawsmith forge --goal "Add rate limiting" --mode execute --tier full
+
+# Epic spec for complex features
+clawsmith forge --goal "Rebuild the entire notification system" --tier epic
+
+# === SPEC COMMANDS ===
+
+# Generate a standalone spec
+clawsmith spec --goal "Add OAuth2 login with Google" --repo-path .
+
+# Refine a spec with feedback
+clawsmith spec-refine --spec-id abc123 --feedback "Split the auth middleware into its own file"
+
+# Execute a previously generated spec
+clawsmith spec-exec --spec-id abc123 --verify
+
+# Verify implementation against a spec
+clawsmith verify --spec-id abc123
+
+# === CLASSIC COMMANDS ===
+
 # Interactive chat session
 clawsmith chat
 
 # Run a coding task through the full pipeline
 clawsmith run-task --task "Fix the login bug in auth.py" --repo-path .
 
-# Dry-run (no API calls, no execution)
-clawsmith run-task --task "Refactor the database layer" --repo-path . --dry-run
+# YOLO mode (heuristic planning, no spec)
+clawsmith yolo --goal "Add health check endpoint" --repo-path .
 
 # Start the MCP server (for Cursor / editor integration)
 clawsmith start
-
-# Start MCP + OpenClaw webhook receiver
-clawsmith start --webhook
 
 # Detect your hardware and recommend local models
 clawsmith detect
@@ -196,23 +223,52 @@ The doctor output is designed for copy-paste into GitHub issues. See [docs/troub
 
 ## 📚 CLI Commands
 
+### Forge (Spec-Driven Development)
+
+| Command | Purpose |
+|---|---|
+| `clawsmith forge` | Full spec→execute→verify→fix loop (the main command) |
+| `clawsmith spec` | Generate an LLM-powered implementation spec |
+| `clawsmith spec-refine` | Refine a spec with feedback |
+| `clawsmith spec-exec` | Execute an existing spec through YOLO |
+| `clawsmith verify` | Verify implementation against a spec |
+
+### Execution
+
+| Command | Purpose |
+|---|---|
+| `clawsmith run-task` | Run the full orchestration pipeline |
+| `clawsmith yolo` | Autonomous multi-phase execution (heuristic planning) |
+| `clawsmith resume` | Resume a paused/failed YOLO run |
+| `clawsmith chat` | Interactive agentic TUI session |
+
+### Setup & Diagnostics
+
 | Command | Purpose |
 |---|---|
 | `clawsmith onboard` | Guided first-run setup |
 | `clawsmith doctor` | Preflight environment check |
 | `clawsmith smoke-test` | Quick integration verification |
 | `clawsmith start` | Start the MCP server |
-| `clawsmith chat` | Interactive agentic TUI session |
-| `clawsmith run-task` | Run the full orchestration pipeline |
-| `clawsmith audit` | Audit a repository |
 | `clawsmith detect` | Detect hardware and toolchain |
 | `clawsmith recommend` | Recommend local LLMs |
 | `clawsmith install-model` | Install a local LLM |
 | `clawsmith detect-agents` | Show agent CLI capability matrix |
+| `clawsmith audit` | Audit a repository |
+
+### OpenClaw & Integration
+
+| Command | Purpose |
+|---|---|
 | `clawsmith register-skill` | Generate OpenClaw `SKILL.md` |
 | `clawsmith openclaw status` | Show OpenClaw integration status |
 | `clawsmith openclaw register` | Generate and optionally register OpenClaw skill metadata |
 | `clawsmith openclaw webhook` | Start the OpenClaw webhook receiver |
+
+### Workspace Management
+
+| Command | Purpose |
+|---|---|
 | `clawsmith memory sync` | Sync persistent memory |
 | `clawsmith link-repo` | Add repo to workspace graph |
 | `clawsmith scope` | View/create scope contracts |
