@@ -267,6 +267,9 @@ _FORGE_LIFECYCLE = [
 @click.option("--max-fixes", default=2, type=int, help="Max fix loops after verification failure.")
 @click.option("--agent", default=None, help="Agent CLI id for execution.")
 @click.option("--dry-run", is_flag=True, help="Generate spec and plan but don't execute.")
+@click.option("--branch/--no-branch", default=False, help="Auto-create a feature branch.")
+@click.option("--pr/--no-pr", default=False, help="Auto-create a GitHub PR (implies --branch).")
+@click.option("--pr-draft/--pr-ready", default=True, help="Create PR as draft (default) or ready.")
 def forge(
     goal: str,
     repo_path: str,
@@ -277,6 +280,9 @@ def forge(
     max_fixes: int,
     agent: str | None,
     dry_run: bool,
+    branch: bool,
+    pr: bool,
+    pr_draft: bool,
 ) -> None:
     """Forge — full spec-driven development loop.
 
@@ -317,7 +323,14 @@ def forge(
         engine_kwargs["spec_model"] = model
         engine_kwargs["verify_model"] = model
 
-    engine = ForgeEngine(max_fix_loops=max_fixes, **engine_kwargs)
+    auto_branch = branch or pr
+    engine = ForgeEngine(
+        max_fix_loops=max_fixes,
+        auto_branch=auto_branch,
+        auto_pr=pr,
+        pr_draft=pr_draft,
+        **engine_kwargs,
+    )
 
     console.print()
     console.print(Panel(
@@ -407,6 +420,12 @@ def forge(
 
     console.print(f"  Duration:    {result.duration_seconds:.1f}s")
     console.print(f"  Fix attempts: {result.fix_attempts}")
+    if result.branch:
+        console.print(f"  Branch:      {result.branch}")
+    if result.commits:
+        console.print(f"  Commits:     {', '.join(result.commits)}")
+    if result.pr_url:
+        console.print(f"  PR:          {result.pr_url}")
 
     if not result.success:
         sys.exit(1)
@@ -925,7 +944,7 @@ def status_cmd(repo_path: str) -> None:
     "--tier", type=click.Choice(["quick", "full", "epic"]), default=None,
     help="Spec detail level. Auto-selects based on complexity if omitted.",
 )
-@click.option("--model", default=None, help="Ollama model name. Default: gpt-oss:20b.")
+@click.option("--model", default=None, help="Ollama model name. Default: qwen2.5-coder:14b.")
 @click.option("--save/--no-save", default=True, help="Save spec to .clawsmith/specs/.")
 def spec(
     goal: str,

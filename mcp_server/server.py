@@ -529,6 +529,285 @@ async def openclaw_skill_manifest() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Forge / Spec-Driven Development tools
+# ---------------------------------------------------------------------------
+
+@mcp.tool
+async def forge_spec(
+    goal: str,
+    repo_path: str = ".",
+    tier: str | None = None,
+    model: str | None = None,
+) -> str:
+    """Generate an LLM-powered implementation spec for a goal.
+
+    Analyses the codebase, reasons about architecture, and produces a
+    structured file-level implementation plan. Uses local Ollama models
+    by default for zero-cost spec generation.
+
+    Args:
+        goal: What to build or change.
+        repo_path: Repository root path.
+        tier: 'quick', 'full', or 'epic'. Auto-selects if omitted.
+        model: Ollama model name. Defaults to qwen2.5-coder:14b.
+
+    Returns:
+        JSON with spec ID, markdown content, file changes, and metadata.
+    """
+    try:
+        from orchestrator.spec_generator import SpecGenerator, SpecTier
+
+        root = _resolve_repo_path(repo_path)
+        audit = RepoAuditor(root).audit()
+        repo_map_result = RepoMapper(root).map()
+        context = ContextPacker(root).pack(audit, repo_map_result, goal)
+        classification = TaskClassifier().classify(goal, context)
+
+        gen_kwargs = {}
+        if model:
+            gen_kwargs["model"] = model
+        generator = SpecGenerator(**gen_kwargs)
+
+        spec_tier = SpecTier(tier) if tier else None
+        spec, spec_path = await generator.generate_and_save(
+            goal, repo_path, context, classification, spec_tier,
+        )
+
+        return json.dumps({
+            "spec_id": spec.id,
+            "tier": spec.tier.value,
+            "summary": spec.summary,
+            "file_changes": len(spec.file_changes),
+            "phases": len(spec.phases),
+            "risks": spec.risks,
+            "open_questions": spec.open_questions,
+            "generation_time_seconds": spec.generation_time_seconds,
+            "model_used": spec.model_used,
+            "saved_to": str(spec_path),
+            "markdown": spec.to_markdown(),
+        }, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, indent=2)
+
+
+@mcp.tool
+async def forge_verify(
+    spec_id: str,
+    repo_path: str = ".",
+    model: str | None = None,
+) -> str:
+    """Verify the current implementation against a generated spec.
+
+    Compares git diffs to the spec's expected file changes and uses
+    LLM analysis to categorize issues as CRITICAL, MAJOR, MINOR, or INFO.
+
+    Args:
+        spec_id: ID of the spec to verify against.
+        repo_path: Repository root path.
+        model: Ollama model for verification.
+
+    Returns:
+        JSON verification report with score, verdict, and categorized comments.
+    """
+    try:
+        from orchestrator.spec_generator import GeneratedSpec
+        from orchestrator.verifier import SpecVerifier
+
+        root = _resolve_repo_path(repo_path)
+        spec_json = root / ".clawsmith" / "specs" / f"{spec_id}.json"
+        if not spec_json.exists():
+            return json.dumps({"error": f"Spec not found: {spec_id}"})
+
+        spec = GeneratedSpec.model_validate_json(spec_json.read_text(encoding="utf-8"))
+
+        verify_kwargs = {}
+        if model:
+            verify_kwargs["model"] = model
+        verifier = SpecVerifier(**verify_kwargs)
+
+        result, report_path = await verifier.verify_and_save(spec, repo_path)
+
+        return json.dumps({
+            "spec_id": spec_id,
+            "passed": result.passed,
+            "score": result.score,
+            "critical_count": result.critical_count,
+            "major_count": result.major_count,
+            "total_comments": len(result.comments),
+            "files_expected": result.files_expected,
+            "files_found": result.files_found,
+            "files_missing": result.files_missing,
+            "files_unplanned": result.files_unplanned,
+            "summary": result.summary,
+            "comments": [c.model_dump() for c in result.comments],
+            "saved_to": str(report_path),
+            "markdown": result.to_markdown(),
+        }, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, indent=2)
+
+
+@mcp.tool
+async def forge_run(
+    goal: str,
+    repo_path: str = ".",
+    mode: str = "forge",
+    tier: str | None = None,
+    model: str | None = None,
+    max_fixes: int = 2,
+) -> str:
+    """Run the full forge pipeline: spec > execute > verify > fix.
+
+    This is the primary spec-driven development command. It generates
+    an implementation spec, executes it through coding agents, verifies
+    the result, and auto-fixes issues.
+
+    Args:
+        goal: What to build or change.
+        repo_path: Repository root.
+        mode: 'plan' (spec only), 'execute' (no auto-fix), 'forge' (full loop).
+        tier: Spec tier ('quick', 'full', 'epic'). Auto-selects if omitted.
+        model: Ollama model name.
+        max_fixes: Max fix loops after verification failure.
+
+    Returns:
+        JSON with spec, execution, and verification results.
+    """
+    try:
+        from orchestrator.forge import ForgeEngine, ForgeMode
+        from orchestrator.agent_status import StatusTracker
+        from orchestrator.schemas import YoloConfig
+        from orchestrator.spec_generator import SpecTier
+
+        forge_mode = ForgeMode(mode)
+        spec_tier = SpecTier(tier) if tier else None
+
+        engine_kwargs = {}
+        if model:
+            engine_kwargs["spec_model"] = model
+            engine_kwargs["verify_model"] = model
+
+        engine = ForgeEngine(max_fix_loops=max_fixes, **engine_kwargs)
+        tracker = StatusTracker()
+        cfg = YoloConfig()
+
+        result = await engine.run(
+            goal, repo_path,
+            mode=forge_mode,
+            spec_tier=spec_tier,
+            yolo_config=cfg,
+            status=tracker,
+        )
+
+        return json.dumps(result.summary(), indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, indent=2)
+
+
+@mcp.tool
+async def forge_refine(
+    spec_id: str,
+    feedback: str,
+    repo_path: str = ".",
+    model: str | None = None,
+) -> str:
+    """Refine an existing spec based on feedback.
+
+    Takes a generated spec and user feedback, produces an updated version
+    that addresses the feedback while preserving the original intent.
+
+    Args:
+        spec_id: ID of the spec to refine.
+        feedback: What to change about the spec.
+        repo_path: Repository root.
+        model: Ollama model name.
+
+    Returns:
+        JSON with the refined spec ID, markdown, and metadata.
+    """
+    try:
+        from orchestrator.spec_generator import GeneratedSpec, SpecGenerator
+
+        root = _resolve_repo_path(repo_path)
+        spec_json = root / ".clawsmith" / "specs" / f"{spec_id}.json"
+        if not spec_json.exists():
+            return json.dumps({"error": f"Spec not found: {spec_id}"})
+
+        original = GeneratedSpec.model_validate_json(spec_json.read_text(encoding="utf-8"))
+
+        gen_kwargs = {}
+        if model:
+            gen_kwargs["model"] = model
+        generator = SpecGenerator(**gen_kwargs)
+
+        refinement_goal = (
+            f"Refine the following implementation spec based on feedback.\n\n"
+            f"## Original Goal\n{original.goal}\n\n"
+            f"## Current Spec\n{original.to_markdown()}\n\n"
+            f"## Feedback\n{feedback}\n\n"
+            f"Produce an updated spec that addresses the feedback."
+        )
+
+        refined = await generator.generate(refinement_goal, tier=original.tier)
+        refined.goal = original.goal
+
+        specs_dir = root / ".clawsmith" / "specs"
+        refined_path = specs_dir / f"{refined.id}.md"
+        refined_path.write_text(refined.to_markdown(), encoding="utf-8")
+        json_path = specs_dir / f"{refined.id}.json"
+        json_path.write_text(refined.model_dump_json(indent=2), encoding="utf-8")
+
+        return json.dumps({
+            "original_spec_id": spec_id,
+            "refined_spec_id": refined.id,
+            "tier": refined.tier.value,
+            "file_changes": len(refined.file_changes),
+            "phases": len(refined.phases),
+            "generation_time_seconds": refined.generation_time_seconds,
+            "saved_to": str(refined_path),
+            "markdown": refined.to_markdown(),
+        }, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, indent=2)
+
+
+@mcp.tool
+async def forge_list_specs(repo_path: str = ".") -> str:
+    """List all generated specs in a repository.
+
+    Returns:
+        JSON array of spec summaries with IDs, goals, tiers, and timestamps.
+    """
+    try:
+        root = _resolve_repo_path(repo_path)
+        specs_dir = root / ".clawsmith" / "specs"
+        if not specs_dir.exists():
+            return json.dumps([])
+
+        from orchestrator.spec_generator import GeneratedSpec
+
+        specs = []
+        for f in sorted(specs_dir.glob("*.json")):
+            try:
+                spec = GeneratedSpec.model_validate_json(f.read_text(encoding="utf-8"))
+                specs.append({
+                    "id": spec.id,
+                    "goal": spec.goal[:100],
+                    "tier": spec.tier.value,
+                    "file_changes": len(spec.file_changes),
+                    "phases": len(spec.phases),
+                    "model_used": spec.model_used,
+                    "created_at": spec.created_at,
+                })
+            except Exception:
+                pass
+
+        return json.dumps(specs, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)}, indent=2)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

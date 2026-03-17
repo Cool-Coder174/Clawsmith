@@ -110,13 +110,16 @@ def _ollama_list_models() -> set[str]:
 
 
 def _required_ollama_models() -> list[str]:
-    """Return the bare Ollama model names needed by the local tiers."""
+    """Return the bare Ollama model names needed by all Ollama-backed tiers."""
     try:
         from config.config_loader import get_config
 
         cfg = get_config()
         models: list[str] = []
-        for tier in (cfg.models.local_router, cfg.models.local_code):
+        for tier in (cfg.models.local_router, cfg.models.local_code,
+                     cfg.models.premium, cfg.models.prompt_polisher):
+            if tier.provider != "ollama":
+                continue
             name = tier.model_name
             if name.startswith("ollama/"):
                 name = name[len("ollama/"):]
@@ -124,7 +127,7 @@ def _required_ollama_models() -> list[str]:
                 models.append(name)
         return models
     except Exception:
-        return ["mistral", "codellama"]
+        return ["mistral", "codellama", "qwen2.5-coder:14b"]
 
 
 def _config_ok() -> bool:
@@ -198,7 +201,9 @@ def run_preflight(
     if result.ollama_installed:
         result.ollama_reachable = _ollama_reachable()
         if result.ollama_reachable:
-            result.available_tiers.extend(["local_router", "local_code"])
+            result.available_tiers.extend(
+                ["local_router", "local_code", "premium", "prompt_polisher"]
+            )
         else:
             result.issues.append(
                 PreflightIssue(
@@ -234,21 +239,18 @@ def run_preflight(
         ]
     _tick("Local models scanned")
 
-    # --- API keys -----------------------------------------------------
+    # --- API keys (informational — all tiers now use local models) -----
     keys = _api_keys_present()
     result.has_api_keys = any(keys.values())
-    if result.has_api_keys:
-        result.available_tiers.append("premium")
-    else:
-        severity = "warning" if result.ollama_reachable else "error"
+    if not result.has_api_keys:
         result.issues.append(
             PreflightIssue(
-                severity=severity,
+                severity="warning",
                 component="API Keys",
-                message="No API keys configured — cloud tiers unavailable",
+                message="No API keys configured — all tiers use local Ollama models",
                 repair_hint=(
-                    "Add OPENAI_API_KEY, ANTHROPIC_API_KEY, or "
-                    "OPENROUTER_API_KEY to .env"
+                    "This is fine for local-only usage. Add OPENAI_API_KEY "
+                    "to .env only if you want cloud fallback."
                 ),
             )
         )

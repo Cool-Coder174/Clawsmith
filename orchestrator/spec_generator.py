@@ -37,7 +37,7 @@ from orchestrator.planner import TaskPlanner
 logger = get_logger("spec_generator")
 
 OLLAMA_BASE = "http://localhost:11434"
-DEFAULT_LOCAL_MODEL = "gpt-oss:20b"
+DEFAULT_LOCAL_MODEL = "qwen2.5-coder:14b"
 SPEC_TIMEOUT = 120  # seconds
 
 

@@ -70,13 +70,13 @@ models:
     max_tokens: 4096
     temperature: 0.1
   premium:
-    provider: openai
-    model_name: openai/gpt-4o
+    provider: ollama
+    model_name: ollama/qwen2.5-coder:14b
     max_tokens: 8192
     temperature: 0.2
   prompt_polisher:
-    provider: openai
-    model_name: openai/gpt-4o-mini
+    provider: ollama
+    model_name: ollama/mistral
     max_tokens: 2048
     temperature: 0.3
 

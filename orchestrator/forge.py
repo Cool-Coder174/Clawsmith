@@ -52,6 +52,10 @@ class ForgeResult:
         self.success: bool = False
         self.error: str | None = None
         self.duration_seconds: float = 0.0
+        self.branch: str | None = None
+        self.pr_url: str | None = None
+        self.pr_number: int | None = None
+        self.commits: list[str] = []
 
     @property
     def final_verification(self) -> VerificationResult | None:
@@ -74,6 +78,10 @@ class ForgeResult:
             "overall_success": self.success,
             "duration_seconds": round(self.duration_seconds, 1),
             "error": self.error,
+            "branch": self.branch,
+            "pr_url": self.pr_url,
+            "pr_number": self.pr_number,
+            "commits": self.commits,
         }
 
 
@@ -92,14 +100,22 @@ class ForgeEngine:
     def __init__(
         self,
         *,
-        spec_model: str = "gpt-oss:20b",
-        verify_model: str = "gpt-oss:20b",
+        spec_model: str = "qwen2.5-coder:14b",
+        verify_model: str = "qwen2.5-coder:14b",
         ollama_base: str = "http://localhost:11434",
         max_fix_loops: int = 2,
+        auto_branch: bool = False,
+        auto_pr: bool = False,
+        pr_draft: bool = True,
+        pr_labels: list[str] | None = None,
     ) -> None:
         self._spec_gen = SpecGenerator(model=spec_model, ollama_base=ollama_base)
         self._verifier = SpecVerifier(model=verify_model, ollama_base=ollama_base)
         self._max_fix_loops = max_fix_loops
+        self._auto_branch = auto_branch
+        self._auto_pr = auto_pr
+        self._pr_draft = pr_draft
+        self._pr_labels = pr_labels or ["forge"]
 
     async def run(
         self,
@@ -147,6 +163,18 @@ class ForgeEngine:
                 result.success = True
                 result.duration_seconds = time.monotonic() - start
                 return result
+
+            # ── PHASE 2b: CREATE BRANCH ───────────────────────────
+            if self._auto_branch or self._auto_pr:
+                try:
+                    from orchestrator.git_ops import GitOps
+                    git = GitOps(repo_path)
+                    branch = git.create_branch(spec)
+                    result.branch = branch
+                    tracker.step("Created branch", branch)
+                except Exception as exc:
+                    logger.warning("Branch creation failed: %s", exc)
+                    tracker.step("Branch creation skipped", str(exc))
 
             # ── PHASE 3: EXECUTE VIA YOLO ─────────────────────────
             tracker.transition(AgentPhase.executing, "Executing spec via YOLO engine")
@@ -200,6 +228,7 @@ class ForgeEngine:
 
             if verification[0].passed:
                 result.success = True
+                await self._auto_commit_and_pr(result, repo_path, tracker)
                 tracker.transition(AgentPhase.complete, "Forge complete — verification passed")
                 result.duration_seconds = time.monotonic() - start
                 return result
@@ -241,6 +270,7 @@ class ForgeEngine:
 
                 if verification[0].passed:
                     result.success = True
+                    await self._auto_commit_and_pr(result, repo_path, tracker)
                     tracker.transition(
                         AgentPhase.complete,
                         f"Forge complete — passed after {fix_round} fix(es)",
@@ -268,6 +298,48 @@ class ForgeEngine:
 
         result.duration_seconds = time.monotonic() - start
         return result
+
+    async def _auto_commit_and_pr(
+        self,
+        result: ForgeResult,
+        repo_path: str,
+        tracker: StatusTracker,
+    ) -> None:
+        """Commit changes and optionally create a PR."""
+        if not (self._auto_branch or self._auto_pr) or not result.spec:
+            return
+
+        try:
+            from orchestrator.git_ops import GitOps
+            git = GitOps(repo_path)
+
+            # Commit
+            commit_hash = git.commit(result.spec)
+            if commit_hash:
+                result.commits.append(commit_hash)
+                tracker.step("Committed changes", commit_hash)
+
+            # Push and PR
+            if self._auto_pr and result.branch:
+                if git.push(result.branch):
+                    tracker.step("Pushed to remote", result.branch)
+
+                    v = result.final_verification
+                    pr_result = git.create_pr(
+                        result.spec,
+                        verification=v,
+                        draft=self._pr_draft,
+                        labels=self._pr_labels,
+                    )
+                    if "pr_url" in pr_result:
+                        result.pr_url = pr_result["pr_url"]
+                        result.pr_number = pr_result.get("pr_number")
+                        tracker.step("PR created", result.pr_url)
+                    elif "error" in pr_result:
+                        tracker.step("PR creation failed", pr_result["error"])
+        except Exception as exc:
+            logger.warning("Auto commit/PR failed: %s", exc)
+            tracker.step("Auto commit/PR skipped", str(exc))
 
     async def _gather_context(
         self,
