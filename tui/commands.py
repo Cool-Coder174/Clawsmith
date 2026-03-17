@@ -74,6 +74,11 @@ class CommandRouter:
         self.register("scope", _cmd_scope, "View scope contracts")
         self.register("agents", _cmd_agents, "List detected agent CLIs")
         self.register("yolo", _cmd_yolo, "YOLO mode — autonomous multi-phase execution")
+        self.register("skills", _cmd_skills, "List / regen / explain skills")
+        self.register("context", _cmd_context, "Show current session context")
+        self.register("plan", _cmd_plan, "Show current execution plan")
+        self.register("remember", _cmd_remember, "Store an always-remember memory")
+        self.register("openclaw", _cmd_openclaw, "OpenClaw integration status")
 
 
 # -----------------------------------------------------------------------
@@ -461,3 +466,259 @@ def _cmd_yolo(session: ChatSession, args: list[str]) -> None:
                 str(pr.attempts),
             ])
         session.renderer.ranked_table("Phase Summary", columns, rows)
+
+
+# -----------------------------------------------------------------------
+# Skill, context, plan, remember, openclaw commands
+# -----------------------------------------------------------------------
+
+
+def _cmd_skills(session: ChatSession, args: list[str]) -> None:
+    """List, regenerate, or explain skills."""
+    from orchestrator.chat_runtime import ChatRuntime
+
+    runtime = _get_session_runtime(session)
+
+    sub = args[0].lower() if args else "list"
+
+    if sub == "regen":
+        session.renderer.system_message("Regenerating skills from repo...")
+        count = runtime.regenerate_skills()
+        session.renderer.system_message(f"Generated {count} skill(s).")
+        return
+
+    if sub == "why" and len(args) > 1:
+        task = " ".join(args[1:])
+        result = runtime.select_skills_for(task)
+        if result["scored"]:
+            columns = [
+                ("Skill", "brand"),
+                ("Score", "success"),
+                ("Reason", "muted"),
+            ]
+            rows = [
+                [s["name"], f"{s['score']:.2f}", s["reason"]]
+                for s in result["scored"][:10]
+            ]
+            session.renderer.ranked_table("Skill Scoring", columns, rows)
+        session.renderer.system_message(result.get("explanation", ""))
+        return
+
+    skills = runtime.list_skills()
+    if not skills:
+        session.renderer.system_message(
+            "No skills loaded. Run /skills regen to generate from repo."
+        )
+        return
+
+    columns = [
+        ("Name", "brand"),
+        ("Source", ""),
+        ("Enabled", "success"),
+        ("Confidence", ""),
+        ("Triggers", "muted"),
+    ]
+    rows = [
+        [
+            s["name"],
+            s["source_type"],
+            "Yes" if s["enabled"] else "No",
+            f"{s['confidence']:.0%}",
+            ", ".join(s["triggers"][:3]),
+        ]
+        for s in skills
+    ]
+    session.renderer.ranked_table("Loaded Skills", columns, rows)
+
+
+def _cmd_context(session: ChatSession, _args: list[str]) -> None:
+    """Show current session context including skills and memory."""
+    runtime = _get_session_runtime(session)
+    explain = runtime.state.get_explainability_summary()
+
+    rows: list[tuple[str, str]] = [
+        ("Repository", str(runtime.state.repo_path)),
+        ("Turn Count", str(explain.get("turn_count", 0))),
+        ("Skills Loaded", str(explain.get("skills_loaded", 0))),
+        ("Dry Run", str(explain.get("dry_run", False))),
+        ("Safe Mode", str(explain.get("safe_mode", True))),
+        ("Model", explain.get("model", "auto")),
+        ("Stacks", ", ".join(runtime.state.repo_stacks) or "unknown"),
+    ]
+
+    skill_sel = explain.get("skill_selection")
+    if skill_sel:
+        rows.append(("Selected Skills", ", ".join(skill_sel.get("selected", []))))
+        rows.append(("Skill Explanation", skill_sel.get("explanation", "")))
+
+    mem = explain.get("memory_retrieval")
+    if mem:
+        rows.append(("Memory Entries", f"{mem.get('entries', 0)}/{mem.get('total_candidates', 0)}"))
+        rows.append(("Memory Explanation", mem.get("explanation", "")))
+
+    session.renderer.key_value_table("Session Context", rows)
+
+
+def _cmd_plan(session: ChatSession, _args: list[str]) -> None:
+    """Show current execution plan."""
+    runtime = _get_session_runtime(session)
+    plan = runtime.state.current_plan
+    if not plan:
+        session.renderer.system_message("No active plan. Submit a task to generate one.")
+        return
+    import json
+    session.renderer.system_message(json.dumps(plan, indent=2))
+
+
+def _cmd_remember(session: ChatSession, args: list[str]) -> None:
+    """Store, list, promote, suppress, or decay always-remember memory.
+
+    Sub-commands:
+        /remember                  — list entries
+        /remember <text>           — store a new entry
+        /remember promote <text>   — promote an outcome
+        /remember suppress <id>    — suppress an entry
+        /remember unsuppress <id>  — un-suppress an entry
+        /remember decay            — auto-suppress noisy entries
+        /remember why <task>       — explain retrieval for a task
+    """
+    runtime = _get_session_runtime(session)
+
+    if not args:
+        entries = runtime.list_memories()
+        if not entries:
+            session.renderer.system_message(
+                "No always-remember entries. Usage: /remember <text to remember>"
+            )
+            return
+        columns = [
+            ("ID", "dim"),
+            ("Category", "brand"),
+            ("Content", ""),
+            ("Score", "success"),
+            ("Hits", ""),
+            ("Accepts", ""),
+            ("Tags", "muted"),
+        ]
+        rows = [
+            [
+                e.get("id", "")[:8],
+                e.get("category", "note"),
+                e.get("content", "")[:45],
+                f"{e.get('usefulness_score', 0.0):.1f}",
+                str(e.get("hit_count", 0)),
+                str(e.get("accept_count", 0)),
+                ", ".join(e.get("tags", [])[:3]),
+            ]
+            for e in entries
+        ]
+        session.renderer.ranked_table("Always Remember", columns, rows)
+        return
+
+    sub = args[0].lower()
+
+    if sub == "promote" and len(args) > 1:
+        content = " ".join(args[1:])
+        eid = runtime.promote_outcome(content, category="user_promoted", tags=["promoted"])
+        session.renderer.system_message(f"Promoted to memory (id={eid}): {content}")
+        return
+
+    if sub == "suppress" and len(args) > 1:
+        eid = args[1]
+        ok = runtime.suppress_memory(eid)
+        if ok:
+            session.renderer.system_message(f"Suppressed memory {eid}")
+        else:
+            session.renderer.error_message(f"Memory {eid} not found")
+        return
+
+    if sub == "unsuppress" and len(args) > 1:
+        eid = args[1]
+        ok = runtime.unsuppress_memory(eid)
+        if ok:
+            session.renderer.system_message(f"Unsuppressed memory {eid}")
+        else:
+            session.renderer.error_message(f"Memory {eid} not found")
+        return
+
+    if sub == "decay":
+        suppressed = runtime.decay_memories()
+        if suppressed:
+            session.renderer.system_message(
+                f"Auto-suppressed {len(suppressed)} noisy entries: {', '.join(suppressed)}"
+            )
+        else:
+            session.renderer.system_message("No entries met the decay threshold.")
+        return
+
+    if sub == "why" and len(args) > 1:
+        task = " ".join(args[1:])
+        mems = runtime.retrieve_memories_for(task)
+        if not mems:
+            session.renderer.system_message("No memories retrieved for that task.")
+            return
+        columns = [
+            ("Category", "brand"),
+            ("Content", ""),
+            ("Score", "success"),
+            ("Why", "muted"),
+        ]
+        rows = [
+            [
+                m["category"],
+                m["content"][:40],
+                f"{m['relevance']:.3f}",
+                m.get("explanation", ""),
+            ]
+            for m in mems[:10]
+        ]
+        session.renderer.ranked_table("Memory Retrieval Explanation", columns, rows)
+        return
+
+    content = " ".join(args)
+    entry_id = runtime.remember(content, category="user_note", tags=["user"])
+    session.renderer.system_message(f"Remembered (id={entry_id}): {content}")
+
+
+def _cmd_openclaw(session: ChatSession, _args: list[str]) -> None:
+    """Show OpenClaw integration status."""
+    try:
+        from skills.openclaw_adapter import OpenClawSkillBridge
+
+        bridge = OpenClawSkillBridge(session.repo_path)
+        status = bridge.get_status()
+
+        rows: list[tuple[str, str]] = [
+            ("Enabled", "Yes" if status["enabled"] else "No"),
+            ("Gateway URL", status["gateway_url"]),
+            ("Is Available", "Yes" if status["is_available"] else "No"),
+            ("Allow Skill Import", "Yes" if status["allow_skill_import"] else "No"),
+            ("Allow External Execution", "Yes" if status["allow_external_execution"] else "No"),
+            ("Require Approval for Writes", "Yes" if status["require_approval_for_external_writes"] else "No"),
+        ]
+
+        try:
+            from config.config_loader import get_config
+
+            cfg = get_config()
+            rows.append(("Skill Name", cfg.openclaw.skill_name))
+            rows.append(("Auto Register", str(cfg.openclaw.auto_register)))
+        except Exception:
+            pass
+
+        session.renderer.key_value_table("OpenClaw Status", rows)
+    except Exception as exc:
+        session.renderer.error_message(f"OpenClaw status check failed: {exc}")
+
+
+def _get_session_runtime(session: ChatSession) -> "ChatRuntime":
+    """Get or create the ChatRuntime attached to this session."""
+    from orchestrator.chat_runtime import ChatRuntime
+
+    if not hasattr(session, "_runtime") or session._runtime is None:
+        session._runtime = ChatRuntime(
+            repo_path=session.repo_path,
+            interactive=True,
+        )
+        session._runtime.initialize()
+    return session._runtime

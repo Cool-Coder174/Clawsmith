@@ -184,6 +184,7 @@ class ChatSession:
         self.repo_path = Path(repo_path).resolve()
         self._running = True
         self._brain: object | None = None  # set after preflight
+        self._runtime: object | None = None  # ChatRuntime, lazily initialized
         self.last_agent_status: dict | None = None  # last pipeline agent_status snapshot
 
     # -- main loop --------------------------------------------------------

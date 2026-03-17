@@ -76,6 +76,10 @@ class OpenClawConfig(BaseModel):
     task_timeout: int = 600
     share_api_keys: bool = True
     share_local_models: bool = True
+    enabled: bool = False
+    allow_skill_import: bool = False
+    allow_external_execution: bool = False
+    require_approval_for_external_writes: bool = True
 
 
 class AgentOverride(BaseModel):
