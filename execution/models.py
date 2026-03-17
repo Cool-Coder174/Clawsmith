@@ -46,6 +46,18 @@ class PhaseExecutionResult(BaseModel):
     retry_count: int = 0
     verification_passed: bool | None = None
     verification_detail: str = ""
+    review_comments: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Structured review findings from diff-vs-plan verification.",
+    )
+    changed_files: list[str] = Field(
+        default_factory=list,
+        description="Files changed during this phase execution.",
+    )
+    verification_score: float | None = Field(
+        default=None,
+        description="0.0-1.0 score from diff-vs-plan verification.",
+    )
     error_message: str | None = None
     error_history: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)

@@ -36,6 +36,7 @@ class PhasePromptBuilder:
         *,
         attempt: int = 1,
         last_error: str | None = None,
+        review_findings: list[dict] | None = None,
     ) -> str:
         sections: list[str] = []
 
@@ -53,7 +54,9 @@ class PhasePromptBuilder:
         sections.append(self._constraints_section(context, phase))
 
         if last_error and attempt > 1:
-            sections.append(self._retry_section(last_error, attempt))
+            sections.append(self._retry_section(
+                last_error, attempt, review_findings=review_findings,
+            ))
 
         sections.append(self._footer(phase, plan))
 
@@ -181,14 +184,42 @@ class PhasePromptBuilder:
         )
 
     @staticmethod
-    def _retry_section(last_error: str, attempt: int) -> str:
-        return (
-            "## Previous Attempt Failed\n"
-            f"**Attempt {attempt - 1} failed with the following error:**\n\n"
-            f"```\n{last_error}\n```\n\n"
-            "Fix the error described above while still completing the phase objective. "
-            "Do not repeat the same mistake."
+    def _retry_section(
+        last_error: str,
+        attempt: int,
+        *,
+        review_findings: list[dict] | None = None,
+    ) -> str:
+        parts = [
+            "## Previous Attempt Failed",
+            f"**Attempt {attempt - 1} failed with the following error:**\n",
+            f"```\n{last_error}\n```\n",
+        ]
+
+        if review_findings:
+            parts.append("### Verification Findings")
+            parts.append(
+                "The following issues were detected when comparing your changes "
+                "against the plan. Address each one:\n"
+            )
+            for finding in review_findings:
+                sev = finding.get("severity", "INFO")
+                cat = finding.get("category", "")
+                msg = finding.get("message", "")
+                fpath = finding.get("file", "")
+                suggestion = finding.get("suggestion", "")
+                loc = f" (`{fpath}`)" if fpath else ""
+                line = f"- **{sev}** [{cat}]{loc}: {msg}"
+                if suggestion:
+                    line += f"\n  - Fix: {suggestion}"
+                parts.append(line)
+            parts.append("")
+
+        parts.append(
+            "Fix the issues described above while still completing the phase objective. "
+            "Do not repeat the same mistakes."
         )
+        return "\n".join(parts)
 
     @staticmethod
     def _footer(phase: YoloPhase, plan: YoloPlan) -> str:

@@ -179,6 +179,39 @@ def _yolo_print_results(result: object, cfg: object) -> None:
         console.print(table)
         console.print()
 
+    # Show verification findings for failed phases
+    if result.phase_results:
+        for pr in result.phase_results:
+            pipeline = getattr(pr, "pipeline_result", None)
+            if pipeline and hasattr(pipeline, "agent_status"):
+                findings = pipeline.agent_status.get("review_comments", [])
+                if findings:
+                    console.print(
+                        f"[bold yellow]Findings for phase {pr.phase_index + 1} "
+                        f"({pr.title}):[/bold yellow]"
+                    )
+                    for f in findings[:5]:
+                        sev = f.get("severity", "INFO")
+                        cat = f.get("category", "")
+                        msg = f.get("message", "")
+                        fpath = f.get("file", "")
+                        sev_style = {
+                            "CRITICAL": "bold red",
+                            "MAJOR": "yellow",
+                            "MINOR": "dim",
+                            "INFO": "dim",
+                        }.get(sev, "white")
+                        loc = f" {fpath}" if fpath else ""
+                        console.print(
+                            f"  [{sev_style}]{sev}[/{sev_style}] "
+                            f"[dim]{cat}[/dim]{loc}: {msg}"
+                        )
+                    if len(findings) > 5:
+                        console.print(
+                            f"  [dim]... and {len(findings) - 5} more[/dim]"
+                        )
+                    console.print()
+
     if result.success:
         console.print("[bold green]YOLO run completed successfully[/bold green]")
     else:

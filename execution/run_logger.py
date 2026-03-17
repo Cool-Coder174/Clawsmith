@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from execution.models import PhaseExecutionResult, RunManifest
+from execution.models import PhaseExecutionResult
 from orchestrator.logging_setup import get_logger
 
 logger = get_logger("run_logger")
@@ -112,6 +112,9 @@ class PhaseRunLogger:
             "error_history": result.error_history,
             "verification_passed": result.verification_passed,
             "verification_detail": result.verification_detail,
+            "review_comments": result.review_comments,
+            "changed_files": result.changed_files,
+            "verification_score": result.verification_score,
             "metadata": result.metadata,
         }
 

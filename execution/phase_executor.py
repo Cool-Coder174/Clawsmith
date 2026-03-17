@@ -34,9 +34,9 @@ from orchestrator.schemas import (
     TaskClassification,
     YoloConfig,
     YoloPhase,
-    YoloPlan,
     YoloPhaseResult,
     YoloPhaseStatus,
+    YoloPlan,
 )
 from orchestrator.task_queue import TaskQueue
 
@@ -133,6 +133,7 @@ class PhaseExecutor:
         phase_num = phase.index + 1
         attempt = 0
         last_error: str | None = None
+        last_review_findings: list[dict] | None = None
 
         while attempt <= config.max_retries:
             attempt += 1
@@ -159,6 +160,7 @@ class PhaseExecutor:
                 classification=classification,
                 attempt=attempt,
                 last_error=last_error,
+                review_findings=last_review_findings,
             )
 
             # 2. Execute via backend
@@ -183,7 +185,7 @@ class PhaseExecutor:
                 AgentPhase.verifying,
                 f"Verifying phase {phase_num}/{queue.total}",
             )
-            self._verify(exec_result, tracker)
+            self._verify(exec_result, tracker, phase=phase, plan=plan)
 
             # 5. Evaluate result
             if exec_result.success and exec_result.verification_passed is not False:
@@ -194,13 +196,14 @@ class PhaseExecutor:
                 self._update_manifest(phase, yolo_result)
                 return yolo_result
 
-            # Phase failed
+            # Phase failed — capture error and review findings for retry
             error_msg = exec_result.error_message or "Phase execution failed"
             if exec_result.verification_passed is False:
                 error_msg = (
                     f"Verification failed: {exec_result.verification_detail}"
                 )
             last_error = error_msg
+            last_review_findings = exec_result.metadata.get("review_comments")
 
             can_retry = attempt <= config.max_retries
             if not can_retry:
@@ -248,8 +251,17 @@ class PhaseExecutor:
         self,
         result: PhaseExecutionResult,
         tracker: StatusTracker,
+        *,
+        phase: YoloPhase | None = None,
+        plan: YoloPlan | None = None,
     ) -> None:
-        """Run verification checks on the execution result."""
+        """Run verification checks on the execution result.
+
+        Performs three layers of checks:
+        1. Exit code and build error detection
+        2. Compile/syntax error scanning in stdout/stderr
+        3. Diff-vs-plan verification (file scope and acceptance criteria)
+        """
         tracker.verify(VerifyStage.build, "Checking exit code")
 
         if result.exit_code != 0:
@@ -269,7 +281,6 @@ class PhaseExecutor:
 
         tracker.verify(VerifyStage.build, "Exit code OK")
 
-        # Check for compile/syntax errors in output
         tracker.verify(VerifyStage.compile_check, "Checking for compile errors")
         stderr_lower = (result.stderr or "").lower()
         stdout_lower = (result.stdout or "").lower()
@@ -291,7 +302,6 @@ class PhaseExecutor:
 
         tracker.verify(VerifyStage.compile_check, "No compile errors")
 
-        # Check for merge conflicts
         tracker.verify(VerifyStage.compare_main, "Checking for merge conflicts")
         full_output = (result.stdout or "") + (result.stderr or "")
         conflict_markers = ("<<<<<<< ", "======= ", ">>>>>>> ")
@@ -306,6 +316,46 @@ class PhaseExecutor:
             return
 
         tracker.verify(VerifyStage.compare_main, "No conflicts")
+
+        # Diff-vs-plan verification
+        if phase and phase.files_in_scope:
+            tracker.verify(VerifyStage.done, "Running diff-vs-plan checks")
+            try:
+                from orchestrator.verifier import PlanVerifier
+
+                report = PlanVerifier().verify_phase(
+                    phase_index=phase.index,
+                    phase_title=phase.title,
+                    plan_id=plan.id if plan else "",
+                    expected_files=phase.files_in_scope,
+                    acceptance_criteria=phase.acceptance_criteria,
+                    repo_path=str(self._root),
+                )
+
+                result.metadata["review_comments"] = report.to_findings_list()
+                result.metadata["changed_files"] = report.changed_files
+                result.metadata["verification_score"] = report.score
+
+                if not report.passed:
+                    findings_summary = "; ".join(
+                        c.one_line() for c in report.comments[:3]
+                    )
+                    result.verification_passed = False
+                    result.verification_detail = (
+                        f"Diff-vs-plan check failed (score={report.score:.0%}): "
+                        f"{findings_summary}"
+                    )
+                    tracker.verify(
+                        VerifyStage.done,
+                        "Diff-vs-plan issues found",
+                        f"score={report.score:.0%}, "
+                        f"critical={report.critical_count}, "
+                        f"major={report.major_count}",
+                    )
+                    return
+            except Exception as exc:
+                logger.warning("Diff-vs-plan verification failed: %s", exc)
+
         tracker.verify(VerifyStage.done, "Verification complete")
         result.verification_passed = True
         result.verification_detail = "All checks passed"

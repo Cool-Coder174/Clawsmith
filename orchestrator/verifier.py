@@ -1,19 +1,15 @@
-"""Semantic verification engine — checks implementation against spec.
+"""Deterministic diff-vs-plan verification engine.
 
-Unlike the existing pipeline verifier (exit code + build errors), this
-compares actual git diffs against the generated spec to catch:
-- Missing file changes (spec says create X, but X doesn't exist)
-- Drift (implementation diverges from spec intent)
-- Incomplete work (partial implementation)
-- Unplanned changes (files modified that aren't in the spec)
+Compares actual git diff output against a plan's expected file scope,
+objectives, and acceptance criteria. Produces categorized review findings
+(CRITICAL / MAJOR / MINOR / INFO) without requiring LLM calls.
 
-Uses local Ollama models for zero-cost verification.
-
-Produces categorized review comments:
-    CRITICAL — blocks merge, must fix
-    MAJOR    — significant issue, should fix
-    MINOR    — style/improvement suggestion
-    INFO     — observation, no action needed
+This module handles two verification surfaces:
+    1. Spec-level   — ``SpecVerifier`` checks a ``GeneratedSpec`` from the
+       LLM spec generator against the working-tree diff.
+    2. Phase-level   — ``PlanVerifier`` checks a ``YoloPlan`` / ``YoloPhase``
+       against the diff produced during phase execution. This is what the
+       ``PhaseExecutor`` calls during the YOLO loop.
 """
 
 from __future__ import annotations
@@ -22,19 +18,18 @@ import subprocess
 import time
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
-import httpx
 from pydantic import BaseModel, Field
 
 from orchestrator.logging_setup import get_logger
-from orchestrator.spec_generator import GeneratedSpec, FileChange
 
 logger = get_logger("verifier")
 
-OLLAMA_BASE = "http://localhost:11434"
-DEFAULT_LOCAL_MODEL = "gpt-oss:20b"
-VERIFY_TIMEOUT = 90
 
+# ---------------------------------------------------------------------------
+# Review comment model
+# ---------------------------------------------------------------------------
 
 class Severity(StrEnum):
     critical = "CRITICAL"
@@ -44,28 +39,29 @@ class Severity(StrEnum):
 
 
 class ReviewComment(BaseModel):
-    """A single review comment produced by verification."""
+    """A single categorized finding from verification."""
     severity: Severity
-    file_path: str = ""
+    category: str
     message: str
+    file: str = ""
     suggestion: str = ""
-    line_range: str = ""
+
+    def one_line(self) -> str:
+        loc = f" ({self.file})" if self.file else ""
+        return f"[{self.severity.value}] {self.category}{loc}: {self.message}"
 
 
-class VerificationResult(BaseModel):
-    """Aggregate result of verifying an implementation against its spec."""
-    spec_id: str
-    goal: str
-    passed: bool
-    score: float = Field(ge=0.0, le=1.0, description="0.0 = total failure, 1.0 = perfect")
+class VerificationReport(BaseModel):
+    """Aggregate verification result."""
+    spec_id: str = ""
+    plan_id: str = ""
+    phase_index: int = -1
+    passed: bool = True
+    score: float = 1.0
     comments: list[ReviewComment] = Field(default_factory=list)
-    files_expected: int = 0
-    files_found: int = 0
-    files_missing: int = 0
-    files_unplanned: int = 0
-    summary: str = ""
-    raw_llm_output: str = ""
-    model_used: str = ""
+    changed_files: list[str] = Field(default_factory=list)
+    expected_files: list[str] = Field(default_factory=list)
+    diff_summary: str = ""
     verification_time_seconds: float = 0.0
 
     @property
@@ -77,396 +73,311 @@ class VerificationResult(BaseModel):
         return sum(1 for c in self.comments if c.severity == Severity.major)
 
     def to_markdown(self) -> str:
+        ident = self.spec_id or self.plan_id or "unknown"
+        verdict = "PASSED" if self.passed else "FAILED"
         lines = [
-            f"# Verification Report",
-            f"**Spec:** {self.spec_id}  ",
-            f"**Goal:** {self.goal}  ",
-            f"**Score:** {self.score:.0%}  ",
-            f"**Verdict:** {'✅ PASSED' if self.passed else '❌ FAILED'}  ",
-            f"**Model:** {self.model_used}  ",
+            f"# Verification Report: {ident}",
             "",
-            "## File Coverage",
-            f"- Expected: {self.files_expected}",
-            f"- Found: {self.files_found}",
-            f"- Missing: {self.files_missing}",
-            f"- Unplanned: {self.files_unplanned}",
+            f"**Verdict:** {verdict}  ",
+            f"**Score:** {self.score:.0%}  ",
+            f"**Changed files:** {len(self.changed_files)}  ",
+            f"**Expected files:** {len(self.expected_files)}  ",
             "",
         ]
 
-        if self.summary:
-            lines += ["## Summary", self.summary, ""]
-
         if self.comments:
-            lines.append("## Comments")
+            lines.append("## Findings")
+            lines.append("")
             for c in self.comments:
-                icon = {"CRITICAL": "🔴", "MAJOR": "🟠", "MINOR": "🟡", "INFO": "🔵"}
-                prefix = icon.get(c.severity.value, "")
-                file_ref = f" `{c.file_path}`" if c.file_path else ""
-                lines.append(f"### {prefix} {c.severity.value}{file_ref}")
-                lines.append(c.message)
+                loc = f" `{c.file}`" if c.file else ""
+                lines.append(f"- **{c.severity.value}** [{c.category}]{loc}: {c.message}")
                 if c.suggestion:
-                    lines.append(f"**Suggestion:** {c.suggestion}")
-                lines.append("")
+                    lines.append(f"  - Suggestion: {c.suggestion}")
+            lines.append("")
+
+        if self.diff_summary:
+            lines.append("## Diff Summary")
+            lines.append(self.diff_summary)
 
         return "\n".join(lines)
 
+    def to_findings_list(self) -> list[dict]:
+        """Return findings as plain dicts for status.json persistence."""
+        return [c.model_dump() for c in self.comments]
 
-_VERIFY_PROMPT = """You are a senior code reviewer verifying an implementation against its specification.
 
-## Original Spec
-Goal: {goal}
+# ---------------------------------------------------------------------------
+# Git diff helpers
+# ---------------------------------------------------------------------------
 
-### Expected File Changes:
-{expected_changes}
+def _git_changed_files(repo_path: str | Path, ref: str = "HEAD") -> list[str]:
+    """Get list of files changed relative to ``ref`` (default: last commit)."""
+    root = Path(repo_path).resolve()
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", ref],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            staged = subprocess.run(
+                ["git", "diff", "--name-only", "--cached"],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            files = staged.stdout.strip().splitlines() if staged.returncode == 0 else []
+        else:
+            files = result.stdout.strip().splitlines()
 
-## Actual Git Diff
-```diff
-{diff}
-```
+        untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if untracked.returncode == 0:
+            files.extend(untracked.stdout.strip().splitlines())
 
-## Files Analysis
-- Expected files: {expected_files}
-- Files with changes in diff: {actual_files}
-- Missing files (in spec but not in diff): {missing_files}
-- Unplanned files (in diff but not in spec): {unplanned_files}
+        return sorted(set(f for f in files if f))
+    except Exception as exc:
+        logger.warning("git diff failed: %s", exc)
+        return []
 
-## Instructions
-Review the diff against the spec and produce a JSON verification report:
-{{
-  "score": 0.85,
-  "summary": "Brief assessment of implementation quality vs spec",
-  "comments": [
-    {{
-      "severity": "CRITICAL|MAJOR|MINOR|INFO",
-      "file_path": "path/to/file.py",
-      "message": "What the issue is",
-      "suggestion": "How to fix it"
-    }}
-  ]
-}}
 
-Scoring guide:
-- 1.0: Perfect implementation of spec
-- 0.8+: Good, minor issues only
-- 0.6-0.8: Acceptable, some significant gaps
-- 0.4-0.6: Partial implementation, major gaps
-- <0.4: Failed, fundamental issues
+def _git_diff_stat(repo_path: str | Path, ref: str = "HEAD") -> str:
+    """Get ``git diff --stat`` output."""
+    root = Path(repo_path).resolve()
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--stat", ref],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except Exception:
+        return ""
 
-Severity guide:
-- CRITICAL: Breaks functionality, missing core requirement, security issue
-- MAJOR: Significant gap from spec, likely bug, missing important piece
-- MINOR: Style issue, could be improved, non-blocking
-- INFO: Observation, context, or praise for good implementation
 
-Only output valid JSON."""
+# ---------------------------------------------------------------------------
+# Phase-level verifier (used by PhaseExecutor in the YOLO loop)
+# ---------------------------------------------------------------------------
 
+class PlanVerifier:
+    """Deterministic diff-vs-plan verification for a single phase.
+
+    Called by ``PhaseExecutor._verify()`` to compare actual repo changes
+    against the phase's ``files_in_scope``, ``objective``, and
+    ``acceptance_criteria``.
+    """
+
+    def verify_phase(
+        self,
+        phase_index: int,
+        phase_title: str,
+        plan_id: str,
+        expected_files: list[str],
+        acceptance_criteria: list[str],
+        repo_path: str | Path,
+        *,
+        git_ref: str = "HEAD",
+    ) -> VerificationReport:
+        start = time.monotonic()
+        changed = _git_changed_files(repo_path, ref=git_ref)
+        diff_stat = _git_diff_stat(repo_path, ref=git_ref)
+        comments: list[ReviewComment] = []
+
+        # -- Check 1: Were expected files touched? --
+        if expected_files:
+            expected_set = set(expected_files)
+            changed_set = set(changed)
+            missing = expected_set - changed_set
+            extra = changed_set - expected_set
+
+            for f in missing:
+                comments.append(ReviewComment(
+                    severity=Severity.major,
+                    category="scope_miss",
+                    message="Expected file was not modified",
+                    file=f,
+                    suggestion="Verify this file still needs changes per the plan",
+                ))
+
+            for f in extra:
+                comments.append(ReviewComment(
+                    severity=Severity.minor,
+                    category="scope_extra",
+                    message="File changed outside planned scope",
+                    file=f,
+                    suggestion="Confirm this change is intentional",
+                ))
+
+        # -- Check 2: Were any files changed at all? --
+        if not changed:
+            comments.append(ReviewComment(
+                severity=Severity.critical,
+                category="no_changes",
+                message="No files were changed during this phase",
+                suggestion="The agent may have failed silently",
+            ))
+
+        # -- Check 3: Acceptance criteria heuristics --
+        for criterion in acceptance_criteria:
+            cl = criterion.lower()
+            if "test" in cl and not any("test" in f.lower() for f in changed):
+                comments.append(ReviewComment(
+                    severity=Severity.major,
+                    category="criteria_unmet",
+                    message=f"Criterion may be unmet: '{criterion}'",
+                    suggestion="No test files were modified",
+                ))
+            if "build succeeds" in cl or "no new build errors" in cl:
+                pass
+
+        # -- Score --
+        critical = sum(1 for c in comments if c.severity == Severity.critical)
+        major = sum(1 for c in comments if c.severity == Severity.major)
+        deductions = critical * 0.4 + major * 0.15
+        score = max(0.0, 1.0 - deductions)
+        passed = critical == 0 and score >= 0.5
+
+        duration = time.monotonic() - start
+        return VerificationReport(
+            plan_id=plan_id,
+            phase_index=phase_index,
+            passed=passed,
+            score=round(score, 2),
+            comments=comments,
+            changed_files=changed,
+            expected_files=expected_files,
+            diff_summary=diff_stat,
+            verification_time_seconds=round(duration, 3),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Spec-level verifier (used by the ``clawsmith verify`` CLI command)
+# ---------------------------------------------------------------------------
 
 class SpecVerifier:
-    """Verifies git diffs against generated specs using LLM analysis."""
+    """Verifies a ``GeneratedSpec`` against the current working tree diff.
 
-    def __init__(
-        self,
-        *,
-        model: str = DEFAULT_LOCAL_MODEL,
-        ollama_base: str = OLLAMA_BASE,
-        timeout: int = VERIFY_TIMEOUT,
-    ) -> None:
-        self._model = model
-        self._ollama_base = ollama_base
-        self._timeout = timeout
+    This is the implementation behind ``clawsmith verify --spec-id <id>``.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        self._extra = kwargs
 
     async def verify(
         self,
-        spec: GeneratedSpec,
+        spec: Any,
         repo_path: str,
-        diff: str | None = None,
-    ) -> VerificationResult:
-        """Verify the current repo state against a spec.
-
-        If ``diff`` is not provided, generates it from git.
-        """
-        root = Path(repo_path).resolve()
+        *,
+        git_ref: str = "HEAD",
+    ) -> VerificationReport:
         start = time.monotonic()
+        root = Path(repo_path).resolve()
+        changed = _git_changed_files(root, ref=git_ref)
+        diff_stat = _git_diff_stat(root, ref=git_ref)
+        comments: list[ReviewComment] = []
 
-        if diff is None:
-            diff = self._get_git_diff(root)
+        expected = self._extract_expected_files(spec)
+        expected_set = set(expected)
+        changed_set = set(changed)
 
-        if not diff.strip():
-            return VerificationResult(
-                spec_id=spec.id,
-                goal=spec.goal,
-                passed=False,
-                score=0.0,
-                summary="No changes detected in the repository.",
-                files_expected=len(self._all_spec_files(spec)),
-                model_used=self._model,
-                verification_time_seconds=time.monotonic() - start,
-            )
-
-        # Structural checks first (no LLM needed)
-        expected_files = set(self._all_spec_files(spec))
-        actual_files = set(self._extract_diff_files(diff))
-        missing = expected_files - actual_files
-        unplanned = actual_files - expected_files
-
-        # Build prompt and call LLM
-        prompt = self._build_prompt(spec, diff, expected_files, actual_files, missing, unplanned)
-        raw_output = await self._call_ollama(prompt)
-        verify_time = time.monotonic() - start
-
-        result = self._parse_response(raw_output, spec, expected_files, actual_files, missing, unplanned)
-        result.model_used = self._model
-        result.verification_time_seconds = round(verify_time, 2)
-        result.raw_llm_output = raw_output
-
-        # Add structural comments for missing/unplanned files
-        if missing:
-            result.comments.insert(0, ReviewComment(
-                severity=Severity.critical if len(missing) > len(expected_files) / 2 else Severity.major,
-                message=f"Missing expected file changes: {', '.join(sorted(missing))}",
-                suggestion="These files were in the spec but have no changes in the diff.",
+        for f in expected_set - changed_set:
+            comments.append(ReviewComment(
+                severity=Severity.major,
+                category="spec_miss",
+                message="Spec expected changes to this file",
+                file=f,
+                suggestion="Implement the planned changes or update the spec",
             ))
 
-        if unplanned:
-            result.comments.append(ReviewComment(
-                severity=Severity.info,
-                message=f"Unplanned file changes: {', '.join(sorted(unplanned))}",
-                suggestion="These files were changed but not listed in the spec. Verify they're intentional.",
+        for f in changed_set - expected_set:
+            comments.append(ReviewComment(
+                severity=Severity.minor,
+                category="spec_extra",
+                message="File changed but not in spec",
+                file=f,
+                suggestion="Confirm this is intentional",
             ))
 
-        logger.info(
-            "Verification complete for spec %s: score=%.0f%% passed=%s "
-            "(%d critical, %d major, %d comments total)",
-            spec.id, result.score * 100, result.passed,
-            result.critical_count, result.major_count, len(result.comments),
+        if not changed:
+            comments.append(ReviewComment(
+                severity=Severity.critical,
+                category="no_changes",
+                message="No files changed relative to the spec",
+            ))
+
+        # Check spec phases if they exist
+        phases = getattr(spec, "phases", []) or []
+        for phase in phases:
+            for criterion in getattr(phase, "acceptance_criteria", []):
+                cl = criterion.lower()
+                if "test" in cl and not any("test" in f.lower() for f in changed):
+                    comments.append(ReviewComment(
+                        severity=Severity.major,
+                        category="criteria_unmet",
+                        message=f"Phase '{getattr(phase, 'title', '?')}' criterion: '{criterion}'",
+                        suggestion="No test files modified",
+                    ))
+
+        critical = sum(1 for c in comments if c.severity == Severity.critical)
+        major = sum(1 for c in comments if c.severity == Severity.major)
+        deductions = critical * 0.4 + major * 0.15
+        score = max(0.0, 1.0 - deductions)
+        passed = critical == 0 and score >= 0.5
+
+        return VerificationReport(
+            spec_id=getattr(spec, "id", ""),
+            passed=passed,
+            score=round(score, 2),
+            comments=comments,
+            changed_files=changed,
+            expected_files=expected,
+            diff_summary=diff_stat,
+            verification_time_seconds=round(time.monotonic() - start, 3),
         )
-        return result
 
     async def verify_and_save(
         self,
-        spec: GeneratedSpec,
+        spec: Any,
         repo_path: str,
-        diff: str | None = None,
-    ) -> tuple[VerificationResult, Path]:
-        """Verify and save the report to .clawsmith/verifications/."""
-        result = await self.verify(spec, repo_path, diff)
+        **kwargs: Any,
+    ) -> tuple[VerificationReport, Path]:
+        report = await self.verify(spec, repo_path, **kwargs)
 
-        verify_dir = Path(repo_path) / ".clawsmith" / "verifications"
-        verify_dir.mkdir(parents=True, exist_ok=True)
+        save_dir = Path(repo_path).resolve() / ".clawsmith" / "verifications"
+        save_dir.mkdir(parents=True, exist_ok=True)
 
-        report_path = verify_dir / f"{spec.id}_verify.md"
-        report_path.write_text(result.to_markdown(), encoding="utf-8")
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        report_path = save_dir / f"verify_{report.spec_id}_{ts}.md"
+        report_path.write_text(report.to_markdown(), encoding="utf-8")
 
-        json_path = verify_dir / f"{spec.id}_verify.json"
-        json_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+        json_path = save_dir / f"verify_{report.spec_id}_{ts}.json"
+        json_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
 
-        return result, report_path
-
-    def _build_prompt(
-        self,
-        spec: GeneratedSpec,
-        diff: str,
-        expected: set[str],
-        actual: set[str],
-        missing: set[str],
-        unplanned: set[str],
-    ) -> str:
-        expected_changes = self._format_expected_changes(spec)
-
-        # Truncate diff if it's massive
-        max_diff = 8000
-        if len(diff) > max_diff:
-            diff = diff[:max_diff] + "\n\n... (diff truncated, showing first 8000 chars)"
-
-        return _VERIFY_PROMPT.format(
-            goal=spec.goal,
-            expected_changes=expected_changes,
-            diff=diff,
-            expected_files=", ".join(sorted(expected)) or "(none)",
-            actual_files=", ".join(sorted(actual)) or "(none)",
-            missing_files=", ".join(sorted(missing)) or "(none)",
-            unplanned_files=", ".join(sorted(unplanned)) or "(none)",
-        )
+        logger.info("Verification report saved to %s", report_path)
+        return report, report_path
 
     @staticmethod
-    def _format_expected_changes(spec: GeneratedSpec) -> str:
-        changes = spec.file_changes
-        if spec.phases:
-            for phase in spec.phases:
-                changes.extend(phase.file_changes)
-
-        if not changes:
-            return "(no specific file changes in spec)"
-
-        lines = []
-        for fc in changes:
-            lines.append(f"- `{fc.path}` ({fc.action}): {fc.description}")
-            for kc in fc.key_changes:
-                lines.append(f"  - {kc}")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _all_spec_files(spec: GeneratedSpec) -> list[str]:
-        files = [fc.path for fc in spec.file_changes]
-        for phase in spec.phases:
-            files.extend(fc.path for fc in phase.file_changes)
-        return list(dict.fromkeys(files))  # dedupe preserving order
-
-    @staticmethod
-    def _extract_diff_files(diff: str) -> list[str]:
-        files = []
-        for line in diff.splitlines():
-            if line.startswith("+++ b/"):
-                path = line[6:]
-                if path != "/dev/null":
+    def _extract_expected_files(spec: Any) -> list[str]:
+        """Pull expected file paths from a GeneratedSpec."""
+        files: list[str] = []
+        for fc in getattr(spec, "file_changes", []):
+            path = getattr(fc, "path", "")
+            if path:
+                files.append(path)
+        for phase in getattr(spec, "phases", []) or []:
+            for fc in getattr(phase, "file_changes", []):
+                path = getattr(fc, "path", "")
+                if path and path not in files:
                     files.append(path)
-            elif line.startswith("--- a/"):
-                path = line[6:]
-                if path != "/dev/null":
-                    files.append(path)
-        return list(dict.fromkeys(files))
-
-    @staticmethod
-    def _get_git_diff(root: Path) -> str:
-        """Get the combined staged + unstaged diff."""
-        try:
-            # Staged changes
-            staged = subprocess.run(
-                ["git", "diff", "--cached"],
-                capture_output=True, text=True, cwd=root,
-            )
-            # Unstaged changes
-            unstaged = subprocess.run(
-                ["git", "diff"],
-                capture_output=True, text=True, cwd=root,
-            )
-            # Untracked files (show content)
-            untracked = subprocess.run(
-                ["git", "ls-files", "--others", "--exclude-standard"],
-                capture_output=True, text=True, cwd=root,
-            )
-
-            parts = []
-            if staged.stdout.strip():
-                parts.append(staged.stdout)
-            if unstaged.stdout.strip():
-                parts.append(unstaged.stdout)
-
-            # For untracked files, create synthetic diff entries
-            for f in untracked.stdout.strip().splitlines():
-                f = f.strip()
-                if f:
-                    fpath = root / f
-                    if fpath.is_file() and fpath.stat().st_size < 50_000:
-                        try:
-                            content = fpath.read_text(encoding="utf-8", errors="replace")
-                            parts.append(
-                                f"diff --git a/{f} b/{f}\n"
-                                f"new file mode 100644\n"
-                                f"--- /dev/null\n"
-                                f"+++ b/{f}\n"
-                                f"@@ -0,0 +1,{len(content.splitlines())} @@\n"
-                                + "\n".join(f"+{line}" for line in content.splitlines())
-                            )
-                        except Exception:
-                            pass
-
-            return "\n".join(parts)
-        except FileNotFoundError:
-            logger.warning("git not found; cannot generate diff")
-            return ""
-
-    async def _call_ollama(self, prompt: str) -> str:
-        payload = {
-            "model": self._model,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": 0.2,
-                "num_predict": 2048,
-            },
-        }
-
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(
-                f"{self._ollama_base}/api/generate",
-                json=payload,
-            )
-            resp.raise_for_status()
-            return resp.json().get("response", "")
-
-    def _parse_response(
-        self,
-        raw: str,
-        spec: GeneratedSpec,
-        expected: set[str],
-        actual: set[str],
-        missing: set[str],
-        unplanned: set[str],
-    ) -> VerificationResult:
-        import json
-        import re
-
-        data = None
-        # Try JSON extraction
-        for pattern in [r"```json\s*\n(.*?)\n\s*```", r"```\s*\n(.*?)\n\s*```", r"\{.*\}"]:
-            match = re.search(pattern, raw, re.DOTALL)
-            if match:
-                candidate = match.group(1) if match.lastindex else match.group(0)
-                try:
-                    data = json.loads(candidate)
-                    break
-                except json.JSONDecodeError:
-                    continue
-
-        if not data:
-            try:
-                data = json.loads(raw.strip())
-            except json.JSONDecodeError:
-                pass
-
-        if not data:
-            # Fallback: structural analysis only
-            coverage = len(actual & expected) / max(len(expected), 1)
-            return VerificationResult(
-                spec_id=spec.id,
-                goal=spec.goal,
-                passed=coverage > 0.7 and not missing,
-                score=round(coverage, 2),
-                files_expected=len(expected),
-                files_found=len(actual & expected),
-                files_missing=len(missing),
-                files_unplanned=len(unplanned),
-                summary="LLM verification output could not be parsed. Score based on file coverage only.",
-            )
-
-        # Parse comments
-        comments = []
-        for c_data in data.get("comments", []):
-            try:
-                comments.append(ReviewComment(
-                    severity=Severity(c_data.get("severity", "INFO")),
-                    file_path=c_data.get("file_path", ""),
-                    message=c_data.get("message", ""),
-                    suggestion=c_data.get("suggestion", ""),
-                ))
-            except Exception:
-                pass
-
-        score = float(data.get("score", 0.5))
-        score = max(0.0, min(1.0, score))
-
-        has_critical = any(c.severity == Severity.critical for c in comments)
-
-        return VerificationResult(
-            spec_id=spec.id,
-            goal=spec.goal,
-            passed=score >= 0.6 and not has_critical,
-            score=score,
-            comments=comments,
-            files_expected=len(expected),
-            files_found=len(actual & expected),
-            files_missing=len(missing),
-            files_unplanned=len(unplanned),
-            summary=data.get("summary", ""),
-        )
+        return files
