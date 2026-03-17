@@ -17,7 +17,7 @@ console = Console()
 
 @click.group()
 def cli() -> None:
-    """ClawSmith — CLI-first orchestration and deployment layer for coding agents."""
+    """Traycer — spec-first AI orchestration: plan, execute, verify."""
 
 
 @cli.command("run-task")
@@ -320,6 +320,168 @@ def resume(
         sys.exit(1)
 
 
+@cli.command("spec")
+@click.option("--goal", required=True, help="What you want to build or change.")
+@click.option("--repo-path", default=".", help="Path to the repository root.")
+@click.option(
+    "--tier", type=click.Choice(["quick", "full", "epic"]), default=None,
+    help="Spec detail level. Auto-selects based on complexity if omitted.",
+)
+@click.option("--model", default=None, help="Ollama model name. Default: gpt-oss:20b.")
+@click.option("--save/--no-save", default=True, help="Save spec to .clawsmith/specs/.")
+def spec(
+    goal: str,
+    repo_path: str,
+    tier: str | None,
+    model: str | None,
+    save: bool,
+) -> None:
+    """Generate an LLM-powered implementation spec from a goal.
+
+    Analyses the codebase, reasons about architecture, and produces a
+    structured file-level implementation plan. Uses local Ollama models
+    for zero-cost spec generation.
+    """
+    from orchestrator.logging_setup import setup_logging
+    from orchestrator.spec_generator import SpecGenerator, SpecTier
+    from routing.classifier import TaskClassifier
+    from tools.context_packer import ContextPacker
+    from tools.repo_auditor import RepoAuditor
+    from tools.repo_mapper import RepoMapper
+
+    setup_logging()
+    root = Path(repo_path).resolve()
+
+    console.print()
+    console.print(Panel(f"[bold cyan]Spec Generator[/bold cyan]  {goal}", expand=False))
+
+    with console.status("[cyan]Auditing repository..."):
+        audit_report = RepoAuditor(root).audit()
+        repo_map = RepoMapper(root).map()
+        context = ContextPacker(root).pack(audit_report, repo_map, goal)
+        classification = TaskClassifier().classify(goal, context)
+
+    spec_tier = SpecTier(tier) if tier else None
+    gen_kwargs = {}
+    if model:
+        gen_kwargs["model"] = model
+
+    generator = SpecGenerator(**gen_kwargs)
+
+    console.print(f"[dim]  Model: {generator._model}[/dim]")
+    console.print(f"[dim]  Complexity: {classification.complexity_score:.2f}[/dim]")
+    auto_tier = generator._auto_tier(classification) if not spec_tier else spec_tier
+    console.print(f"[dim]  Tier: {auto_tier.value}[/dim]")
+    console.print()
+
+    with console.status(f"[cyan]Generating {auto_tier.value} spec via Ollama..."):
+        if save:
+            result, spec_path = asyncio.run(
+                generator.generate_and_save(
+                    goal, repo_path, context, classification, spec_tier,
+                )
+            )
+        else:
+            result = asyncio.run(
+                generator.generate(goal, context, classification, spec_tier)
+            )
+            spec_path = None
+
+    # Display the spec
+    try:
+        console.print(Syntax(result.to_markdown(), "markdown", theme="monokai"))
+    except (UnicodeEncodeError, Exception):
+        # Fallback for terminals that can't handle unicode in syntax highlighting
+        console.print(Panel(result.to_markdown(), title="Generated Spec", border_style="cyan"))
+    console.print()
+
+    console.print(f"[bold green]Spec generated[/bold green] in {result.generation_time_seconds:.1f}s")
+    console.print(f"  ID:           {result.id}")
+    console.print(f"  Tier:         {result.tier.value}")
+    console.print(f"  File changes: {len(result.file_changes)}")
+    console.print(f"  Phases:       {len(result.phases)}")
+    console.print(f"  Risks:        {len(result.risks)}")
+    if spec_path:
+        console.print(f"  Saved to:     {spec_path}")
+
+
+@cli.command("verify")
+@click.option("--spec-id", required=True, help="Spec ID to verify against.")
+@click.option("--repo-path", default=".", help="Path to the repository root.")
+@click.option("--model", default=None, help="Ollama model name for verification.")
+@click.option("--save/--no-save", default=True, help="Save report to .clawsmith/verifications/.")
+def verify(
+    spec_id: str,
+    repo_path: str,
+    model: str | None,
+    save: bool,
+) -> None:
+    """Verify implementation against a generated spec.
+
+    Compares git diffs to the spec's expected file changes and uses
+    LLM analysis to categorize issues as CRITICAL, MAJOR, MINOR, or INFO.
+    """
+    import json as json_mod
+    from orchestrator.logging_setup import setup_logging
+    from orchestrator.spec_generator import GeneratedSpec
+    from orchestrator.verifier import SpecVerifier
+
+    setup_logging()
+    root = Path(repo_path).resolve()
+    specs_dir = root / ".clawsmith" / "specs"
+    spec_json = specs_dir / f"{spec_id}.json"
+
+    if not spec_json.exists():
+        console.print(f"[bold red]Spec not found:[/bold red] {spec_json}")
+        console.print(f"[dim]Available specs in {specs_dir}:[/dim]")
+        if specs_dir.exists():
+            for f in specs_dir.glob("*.json"):
+                console.print(f"  {f.stem}")
+        sys.exit(1)
+
+    spec_obj = GeneratedSpec.model_validate_json(spec_json.read_text(encoding="utf-8"))
+
+    console.print()
+    console.print(Panel(
+        f"[bold cyan]Verification[/bold cyan]  spec={spec_id}  goal={spec_obj.goal[:60]}",
+        expand=False,
+    ))
+
+    verify_kwargs = {}
+    if model:
+        verify_kwargs["model"] = model
+    verifier = SpecVerifier(**verify_kwargs)
+
+    with console.status("[cyan]Verifying implementation against spec..."):
+        if save:
+            result, report_path = asyncio.run(
+                verifier.verify_and_save(spec_obj, repo_path)
+            )
+        else:
+            result = asyncio.run(verifier.verify(spec_obj, repo_path))
+            report_path = None
+
+    # Display report
+    try:
+        console.print(Syntax(result.to_markdown(), "markdown", theme="monokai"))
+    except (UnicodeEncodeError, Exception):
+        console.print(Panel(result.to_markdown(), title="Verification Report", border_style="cyan"))
+    console.print()
+
+    verdict_style = "bold green" if result.passed else "bold red"
+    verdict_text = "PASSED" if result.passed else "FAILED"
+    console.print(f"[{verdict_style}]Verdict: {verdict_text}[/{verdict_style}]  Score: {result.score:.0%}")
+    console.print(f"  🔴 Critical: {result.critical_count}")
+    console.print(f"  🟠 Major:    {result.major_count}")
+    console.print(f"  Comments:    {len(result.comments)} total")
+    console.print(f"  Duration:    {result.verification_time_seconds:.1f}s")
+    if report_path:
+        console.print(f"  Report:      {report_path}")
+
+    if not result.passed:
+        sys.exit(1)
+
+
 @cli.command("audit")
 @click.option("--repo-path", default=".", help="Path to the repository root.")
 def audit(repo_path: str) -> None:
@@ -353,7 +515,7 @@ def run_job(job_file: str, agent: str | None) -> None:
     effective_agent = agent or job.agent_target
     agent_id = "none"
     agent_invocation = ""
-    agent_display_name = "ClawSmith"
+    agent_display_name = "Traycer"
 
     try:
         config = get_config()
@@ -403,7 +565,7 @@ def run_job(job_file: str, agent: str | None) -> None:
 
 @cli.command("start-server")
 def start_server() -> None:
-    """Start the ClawSmith MCP server."""
+    """Start the Traycer MCP server."""
     from config.config_loader import get_config
     from orchestrator.logging_setup import setup_logging
 
@@ -430,7 +592,7 @@ def onboard() -> None:
 
 @cli.command("doctor")
 def doctor() -> None:
-    """Run preflight checks and report ClawSmith readiness."""
+    """Run preflight checks and report Traycer readiness."""
     from orchestrator.doctor import run_doctor
 
     ok = run_doctor()
@@ -460,7 +622,7 @@ def smoke_test() -> None:
     help="Also start the OpenClaw webhook receiver alongside the MCP server.",
 )
 def start(host: str | None, port: int | None, webhook: bool) -> None:
-    """Start ClawSmith (MCP server + optional webhook receiver)."""
+    """Start Traycer (MCP server + optional webhook receiver)."""
     import threading
 
     from config.config_loader import get_config
@@ -472,7 +634,7 @@ def start(host: str | None, port: int | None, webhook: bool) -> None:
     effective_port = port or cfg.mcp_server.port
 
     console.print(
-        f"[bold cyan]ClawSmith[/bold cyan] starting on "
+        f"[bold cyan]Traycer[/bold cyan] starting on "
         f"{effective_host}:{effective_port} "
         f"(transport={cfg.mcp_server.transport})"
     )
@@ -537,7 +699,7 @@ def openclaw_webhook(host: str | None, port: int | None) -> None:
 @click.option("--output", default="SKILL.md", help="Output path for SKILL.md.")
 @click.option("--remote", is_flag=True, help="Also push manifest to OpenClaw gateway.")
 def openclaw_register(output: str, remote: bool) -> None:
-    """Register ClawSmith as an OpenClaw skill."""
+    """Register Traycer as an OpenClaw skill."""
     from orchestrator.logging_setup import setup_logging
     from providers.openclaw_adapter import OpenClawAdapter
 
@@ -651,7 +813,7 @@ def openclaw_manifest() -> None:
 @cli.command("chat")
 @click.option("--repo-path", default=".", help="Repository to work with.")
 def chat(repo_path: str) -> None:
-    """Start an interactive ClawSmith session (agentic TUI)."""
+    """Start an interactive Traycer session (agentic TUI)."""
     from tui.session import ChatSession
 
     ChatSession(repo_path=repo_path).run()
@@ -663,7 +825,7 @@ def chat(repo_path: str) -> None:
 
 @cli.group("skills")
 def skills_group() -> None:
-    """Manage ClawSmith skills — list, generate, and inspect."""
+    """Manage Traycer skills — list, generate, and inspect."""
 
 
 @skills_group.command("list")
@@ -677,7 +839,7 @@ def skills_list(repo_path: str) -> None:
     skills = runtime.list_skills()
 
     if not skills:
-        console.print("[dim]No skills found. Run 'clawsmith skills generate' first.[/dim]")
+        console.print("[dim]No skills found. Run 'traycer skills generate' first.[/dim]")
         return
 
     table = Table(title="Loaded Skills", show_lines=True)
@@ -783,7 +945,7 @@ def quickstart() -> None:
         from recommendation.engine import RecommendationEngine
         from repo_graph.linker import RepoLinker
 
-        console.print(Panel("[bold cyan]ClawSmith Quickstart[/bold cyan]", expand=False))
+        console.print(Panel("[bold cyan]Traycer Quickstart[/bold cyan]", expand=False))
 
         # 1 - Hardware detection
         console.print("\n[bold]Step 1:[/bold] Detecting hardware ...")
@@ -857,7 +1019,7 @@ def quickstart() -> None:
             console.print(f"  {t.name}: {status} {t.version or ''}")
 
         # 8 - Offer to link current repo
-        if click.confirm("Link the current repository to ClawSmith?", default=True):
+        if click.confirm("Link the current repository to Traycer?", default=True):
             console.print("\n[bold]Step 5:[/bold] Linking repository ...")
             graph_path = _REPO_ROOT / "clawsmith" / "repo-graph.json"
             linker = RepoLinker(config_path=graph_path)
@@ -872,9 +1034,9 @@ def quickstart() -> None:
         # 10 - Welcome summary
         console.print(
             Panel(
-                "[bold green]ClawSmith is ready![/bold green]\n"
-                "Run [cyan]clawsmith doctor[/cyan] to verify, or "
-                "[cyan]clawsmith run-task --task '...'[/cyan] to get started.",
+                "[bold green]Traycer is ready![/bold green]\n"
+                "Run [cyan]traycer doctor[/cyan] to verify, or "
+                "[cyan]traycer plan --goal '...'[/cyan] to get started.",
                 title="Setup Complete",
                 expand=False,
             )
@@ -1077,7 +1239,7 @@ def install_model(model_id: str | None, target_path: str | None, runtime: str) -
 @click.option("--role", default="", help="Repo role: primary, shared-lib, cli, service.")
 @click.option("--description", default="", help="Short description.")
 def link_repo(repo_path: str, role: str, description: str) -> None:
-    """Add a repository to the ClawSmith workspace graph."""
+    """Add a repository to the Traycer workspace graph."""
     try:
         from repo_graph.linker import RepoLinker
 
@@ -1185,7 +1347,7 @@ def memory_show() -> None:
             table.add_row("Repos", str(len(arch.repos)))
             console.print(table)
         else:
-            console.print("[dim]No architecture data. Run 'clawsmith memory sync' first.[/dim]")
+            console.print("[dim]No architecture data. Run 'traycer memory sync' first.[/dim]")
 
         if prefs:
             console.print("\n[bold]Preferences:[/bold]")
@@ -1338,7 +1500,7 @@ def rollback(proposal_id: str) -> None:
 )
 @click.option("--force", is_flag=True, help="Discard local changes before pulling.")
 def update(branch: str | None, force: bool) -> None:
-    """Pull the latest source from Git and re-install ClawSmith."""
+    """Pull the latest source from Git and re-install Traycer."""
     import shutil
     import subprocess
 
@@ -1354,7 +1516,7 @@ def update(branch: str | None, force: bool) -> None:
         )
         sys.exit(1)
 
-    console.print("[bold cyan]ClawSmith self-update[/bold cyan]\n")
+    console.print("[bold cyan]Traycer self-update[/bold cyan]\n")
 
     # 1 — Save current version for comparison
     try:
@@ -1450,5 +1612,5 @@ def update(branch: str | None, force: bool) -> None:
 
     console.print(
         "\n[bold green]Update complete.[/bold green]  "
-        "Restart any running ClawSmith sessions to use the new version."
+        "Restart any running Traycer sessions to use the new version."
     )
