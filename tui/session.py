@@ -52,6 +52,15 @@ _INTENT_KEYWORDS: dict[str, list[str]] = {
         "run everything", "do everything", "full pipeline",
         "just do it", "run all phases",
     ],
+    "spec": [
+        "plan this", "spec for", "generate a spec", "create a plan",
+        "break down", "decompose", "phase this", "spec it out",
+        "implementation plan", "PRD", "technical spec",
+    ],
+    "verify": [
+        "verify", "check my work", "validate against plan",
+        "does this match the spec", "diff check",
+    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -895,6 +904,142 @@ def _handle_task(
     return f"Pipeline failed: {result.error_message}", events
 
 
+def _handle_verify(
+    session: ChatSession, query: str,
+) -> tuple[str, list]:
+    """Verify the current diff against a spec."""
+    from tui.spec_commands import format_verification_report, verify_spec
+    from orchestrator.spec_generator import SpecGenerator
+    import re
+
+    events = []
+    
+    # Extract spec ID from query if provided
+    spec_id = None
+    match = re.search(r'verify\s+(?:spec\s+)?([a-zA-Z0-9_-]+)', query)
+    if match:
+        spec_id = match.group(1)
+    
+    with ThoughtStream(session.renderer.console) as ts:
+        ts.emit(ThoughtPhase.analyzing, "Scanning working tree diff")
+        
+        try:
+            # List specs if no ID provided
+            if not spec_id:
+                from tui.spec_commands import list_specs
+                specs = list_specs(session.repo_path)
+                if not specs:
+                    ts.emit(ThoughtPhase.complete, "No specs found")
+                    return "No specs found. Generate one with **/spec** or describe a task.".format(), events
+                
+                lines = ["**Available specs:**\n"]
+                for s in specs[:5]:
+                    lines.append(
+                        f"- `{s['id']}` — {s['goal'][:50]} "
+                        f"(tier: {s['tier']}, {s['file_count']} files)"
+                    )
+                lines.append("\nRun **/verify <spec-id>** to verify a specific spec.")
+                return "\n".join(lines), events
+            
+            # Verify the spec
+            ts.emit(ThoughtPhase.analyzing, f"Verifying spec {spec_id}")
+            report = asyncio.run(verify_spec(spec_id, session.repo_path))
+            ts.emit(ThoughtPhase.complete, f"Verified: {report.score:.0%}")
+            events = ts.events
+            
+        except FileNotFoundError as e:
+            ts.emit(ThoughtPhase.error, str(e))
+            return f"Spec not found: {spec_id}. Run **/spec** to generate one.", ts.events
+        except Exception as exc:
+            ts.emit(ThoughtPhase.error, str(exc))
+            return f"Verification error: {exc}", ts.events
+    
+    return format_verification_report(report), events
+
+
+def _handle_spec(
+    session: ChatSession, query: str,
+) -> tuple[str, list]:
+    """Generate a structured spec from user intent."""
+    from tui.spec_commands import format_spec_summary, generate_spec_from_goal
+    from orchestrator.spec_generator import SpecTier
+    import re
+
+    events = []
+    
+    # Extract tier if provided
+    tier = None
+    if "--epic" in query or "complex" in query.lower():
+        tier = SpecTier.epic
+    elif "--quick" in query or "simple" in query.lower():
+        tier = SpecTier.quick
+    
+    # Extract goal from query (strip command and options)
+    goal = re.sub(r'^/spec\s*', '', query, flags=re.IGNORECASE)
+    goal = re.sub(r'--epic|--quick|\bsimple\b|\bcomplex\b', '', goal, flags=re.IGNORECASE).strip()
+    
+    if not goal:
+        return (
+            "Usage: **/spec <goal description>**\n\n"
+            "Options:\n"
+            "  `--epic` — multi-phase complex feature\n"
+            "  `--quick` — simple single-file change\n\n"
+            "Examples:\n"
+            "  `/spec add OAuth2 login`\n"
+            "  `/spec --epic build a real-time chat system`"
+        ), events
+    
+    with ThoughtStream(session.renderer.console) as ts:
+        ts.emit(ThoughtPhase.analyzing, "Auditing repo and gathering context")
+        
+        try:
+            spec, spec_path = asyncio.run(
+                generate_spec_from_goal(goal, session.repo_path, tier)
+            )
+            ts.emit(ThoughtPhase.complete, f"Generated {spec.id}")
+            events = ts.events
+            
+        except Exception as exc:
+            ts.emit(ThoughtPhase.error, str(exc))
+            return f"Spec generation failed: {exc}", ts.events
+    
+    summary = format_spec_summary(spec)
+    footer = (
+        f"\n---\n"
+        f"📁 Saved to `.clawsmith/specs/{spec.id}.md`\n"
+        f"Run **/verify {spec.id}** after implementing to check your work."
+    )
+    
+    return summary + footer, events
+
+
+def _handle_list_specs(
+    session: ChatSession, _query: str,
+) -> tuple[str, list]:
+    """List all available specs."""
+    from tui.spec_commands import list_specs
+    
+    specs = list_specs(session.repo_path)
+    
+    if not specs:
+        return (
+            "No specs found. Run **/spec <goal>** to generate one.\n\n"
+            "Example: `/spec add user authentication with JWT`"
+        ), []
+    
+    lines = [f"**{len(specs)} Spec(s) Found:**\n"]
+    for s in specs:
+        phases_info = f", {s['phase_count']} phases" if s['phase_count'] else ""
+        lines.append(
+            f"- `{s['id']}` — **{s['goal'][:60]}**\n"
+            f"  tier: {s['tier']} | {s['file_count']} files{phases_info}"
+        )
+    
+    lines.append("\nRun **/verify <spec-id>** to check implementation against a spec.")
+    
+    return "\n".join(lines), []
+
+
 def _handle_yolo(
     session: ChatSession, query: str,
 ) -> tuple[str, list]:
@@ -957,6 +1102,8 @@ _INTENT_HANDLERS: dict[str, object] = {
     "link": _handle_link,
     "scope": _handle_scope,
     "yolo": _handle_yolo,
+    "spec": _handle_spec,
+    "verify": _handle_verify,
     "conversation": _handle_conversation,
     "task": _handle_task,
 }

@@ -79,6 +79,9 @@ class CommandRouter:
         self.register("plan", _cmd_plan, "Show current execution plan")
         self.register("remember", _cmd_remember, "Store an always-remember memory")
         self.register("openclaw", _cmd_openclaw, "OpenClaw integration status")
+        self.register("spec", _cmd_spec, "Generate structured spec from goal")
+        self.register("verify", _cmd_verify, "Verify diff against a spec")
+        self.register("specs", _cmd_specs, "List all available specs")
 
 
 # -----------------------------------------------------------------------
@@ -680,6 +683,161 @@ def _cmd_remember(session: ChatSession, args: list[str]) -> None:
     session.renderer.system_message(f"Remembered (id={entry_id}): {content}")
 
 
+def _cmd_specs(session: ChatSession, _args: list[str]) -> None:
+    """List all available specs."""
+    try:
+        from tui.spec_commands import list_specs
+        
+        specs = list_specs(session.repo_path)
+        
+        if not specs:
+            session.renderer.system_message(
+                "No specs found. Run **/spec <goal>** to generate one.\n\n"
+                "Example: `/spec add user authentication with JWT`"
+            )
+            return
+        
+        columns = [
+            ("ID", "dim"),
+            ("Goal", ""),
+            ("Tier", ""),
+            ("Files", ""),
+            ("Phases", ""),
+        ]
+        rows = [
+            [
+                s["id"][:12],
+                s["goal"][:40],
+                s["tier"],
+                str(s["file_count"]),
+                str(s["phase_count"]),
+            ]
+            for s in specs
+        ]
+        session.renderer.ranked_table(f"Specs ({len(specs)})", columns, rows)
+    except Exception as exc:
+        session.renderer.error_message(f"Failed to list specs: {exc}")
+
+
+def _cmd_spec(session: ChatSession, args: list[str]) -> None:
+    """Generate a structured spec from a goal description.
+
+    Usage:
+        /spec <goal>              — generate a full spec
+        /spec --epic <goal>       — generate a phased epic spec
+        /spec --quick <goal>      — generate a quick spec
+    """
+    import asyncio
+    from tui.spec_commands import format_spec_summary, generate_spec_from_goal
+    from orchestrator.spec_generator import SpecTier
+
+    if not args:
+        session.renderer.system_message(
+            "Usage: **/spec <goal>**\n\n"
+            "Options:\n"
+            "  `--epic` — multi-phase complex feature\n"
+            "  `--quick` — simple single-file change\n\n"
+            "Examples:\n"
+            "  `/spec add OAuth2 login`\n"
+            "  `/spec --epic build a real-time chat system`"
+        )
+        return
+
+    # Parse tier flags
+    tier = None
+    goal_args = []
+    for arg in args:
+        if arg == "--epic":
+            tier = SpecTier.epic
+        elif arg == "--quick":
+            tier = SpecTier.quick
+        else:
+            goal_args.append(arg)
+
+    goal = " ".join(goal_args)
+
+    from tui.thinking import ThoughtStream
+
+    tracker = None
+    with ThoughtStream(session.renderer.console) as ts:
+        ts.emit(ThoughtPhase.analyzing, "Auditing repo and gathering context")
+        try:
+            spec, spec_path = asyncio.run(
+                generate_spec_from_goal(goal, session.repo_path, tier)
+            )
+            ts.emit(ThoughtPhase.complete, f"Generated {spec.id}")
+        except Exception as exc:
+            ts.emit(ThoughtPhase.error, str(exc))
+            session.renderer.error_message(f"Spec generation failed: {exc}")
+            return
+
+    summary = format_spec_summary(spec)
+    footer = (
+        f"\n---\n"
+        f"📁 Saved to `.clawsmith/specs/{spec.id}.md`\n"
+        f"Run **/verify {spec.id}** after implementing to check your work."
+    )
+    session.renderer.agent_message(summary + footer)
+
+
+def _cmd_verify(session: ChatSession, args: list[str]) -> None:
+    """Verify the current diff against a spec.
+
+    Usage:
+        /verify                  — list all specs
+        /verify <spec-id>        — verify a specific spec
+    """
+    import asyncio
+    from tui.spec_commands import format_verification_report, verify_spec
+
+    spec_id = args[0] if args else None
+
+    if not spec_id:
+        # List specs
+        from tui.spec_commands import list_specs
+        specs = list_specs(session.repo_path)
+        if not specs:
+            session.renderer.system_message(
+                "No specs found. Generate one with **/spec <goal>**."
+            )
+            return
+        columns = [
+            ("ID", "dim"),
+            ("Goal", ""),
+            ("Tier", ""),
+            ("Files", ""),
+        ]
+        rows = [
+            [s["id"][:12], s["goal"][:45], s["tier"], str(s["file_count"])]
+            for s in specs
+        ]
+        session.renderer.ranked_table(f"Available Specs ({len(specs)})", columns, rows)
+        session.renderer.system_message(
+            "\nRun **/verify <spec-id>** to verify a spec against your current diff."
+        )
+        return
+
+    from tui.thinking import ThoughtStream
+
+    with ThoughtStream(session.renderer.console) as ts:
+        ts.emit(ThoughtPhase.analyzing, "Scanning working tree diff")
+        try:
+            report = asyncio.run(verify_spec(spec_id, session.repo_path))
+            ts.emit(ThoughtPhase.complete, f"Verified: {report.score:.0%}")
+        except FileNotFoundError:
+            ts.emit(ThoughtPhase.error, f"Spec '{spec_id}' not found")
+            session.renderer.error_message(
+                f"Spec '{spec_id}' not found. Run **/specs** to see available specs."
+            )
+            return
+        except Exception as exc:
+            ts.emit(ThoughtPhase.error, str(exc))
+            session.renderer.error_message(f"Verification failed: {exc}")
+            return
+
+    session.renderer.agent_message(format_verification_report(report))
+
+
 def _cmd_openclaw(session: ChatSession, _args: list[str]) -> None:
     """Show OpenClaw integration status."""
     try:
@@ -709,6 +867,150 @@ def _cmd_openclaw(session: ChatSession, _args: list[str]) -> None:
         session.renderer.key_value_table("OpenClaw Status", rows)
     except Exception as exc:
         session.renderer.error_message(f"OpenClaw status check failed: {exc}")
+
+
+def _cmd_spec(session: ChatSession, args: list[str]) -> None:
+    """Generate a structured spec from a goal.
+    
+    Usage:
+        /spec <goal description>
+        /spec --epic <complex goal>
+        /spec --quick <simple goal>
+    """
+    import asyncio
+    from orchestrator.spec_generator import SpecTier
+
+    if not args:
+        session.renderer.system_message(
+            "Usage: /spec <goal description>\n\n"
+            "Options:\n"
+            "  --epic  — multi-phase complex feature\n"
+            "  --quick — simple single-file change\n\n"
+            "Example: /spec add OAuth2 login with Google and GitHub"
+        )
+        return
+
+    # Determine tier
+    tier = None
+    if "--epic" in args:
+        tier = SpecTier.epic
+        args = [a for a in args if a != "--epic"]
+    elif "--quick" in args:
+        tier = SpecTier.quick
+        args = [a for a in args if a != "--quick"]
+
+    goal = " ".join(args)
+    if not goal:
+        session.renderer.error_message("Usage: /spec <goal description>")
+        return
+
+    from tui.thinking import ThoughtStream
+    from tui.spec_commands import format_spec_summary, generate_spec_from_goal
+
+    with ThoughtStream(session.renderer.console) as ts:
+        ts.emit(ThoughtPhase.analyzing, "Auditing repo and gathering context")
+        try:
+            spec, spec_path = asyncio.run(
+                generate_spec_from_goal(goal, session.repo_path, tier)
+            )
+            ts.emit(ThoughtPhase.complete, f"Generated {spec.id}")
+        except Exception as exc:
+            ts.emit(ThoughtPhase.error, str(exc))
+            session.renderer.error_message(f"Spec generation failed: {exc}")
+            return
+
+    summary = format_spec_summary(spec)
+    footer = (
+        f"\n---\n"
+        f"📁 Saved to `.clawsmith/specs/{spec.id}.md`\n"
+        f"Run **/verify {spec.id}** after implementing to check your work."
+    )
+
+    session.renderer.agent_message(summary + footer)
+
+
+def _cmd_verify(session: ChatSession, args: list[str]) -> None:
+    """Verify implementation against a spec.
+    
+    Usage:
+        /verify <spec-id>  — verify a specific spec
+        /verify            — list available specs
+    """
+    import asyncio
+    from tui.thinking import ThoughtStream
+    from tui.spec_commands import format_verification_report, list_specs, verify_spec
+
+    spec_id = args[0] if args else None
+
+    with ThoughtStream(session.renderer.console) as ts:
+        ts.emit(ThoughtPhase.analyzing, "Scanning working tree diff")
+
+        try:
+            if not spec_id:
+                specs = list_specs(session.repo_path)
+                if not specs:
+                    ts.emit(ThoughtPhase.complete, "No specs found")
+                    session.renderer.system_message(
+                        "No specs found. Run **/spec <goal>** to generate one."
+                    )
+                    return
+
+                lines = ["**Available specs:**\n"]
+                for s in specs[:5]:
+                    lines.append(
+                        f"- `{s['id']}` — {s['goal'][:50]} "
+                        f"(tier: {s['tier']}, {s['file_count']} files)"
+                    )
+                lines.append("\nRun **/verify <spec-id>** to verify a specific spec.")
+                session.renderer.agent_message("\n".join(lines))
+                return
+
+            ts.emit(ThoughtPhase.analyzing, f"Verifying spec {spec_id}")
+            report = asyncio.run(verify_spec(spec_id, session.repo_path))
+            ts.emit(ThoughtPhase.complete, f"Verified: {report.score:.0%}")
+
+        except FileNotFoundError as e:
+            ts.emit(ThoughtPhase.error, str(e))
+            session.renderer.error_message(f"Spec not found: {spec_id}")
+            return
+        except Exception as exc:
+            ts.emit(ThoughtPhase.error, str(exc))
+            session.renderer.error_message(f"Verification error: {exc}")
+            return
+
+    session.renderer.agent_message(format_verification_report(report))
+
+
+def _cmd_specs(session: ChatSession, _args: list[str]) -> None:
+    """List all available specs."""
+    from tui.spec_commands import list_specs
+
+    specs = list_specs(session.repo_path)
+
+    if not specs:
+        session.renderer.system_message(
+            "No specs found. Run **/spec <goal>** to generate one."
+        )
+        return
+
+    columns = [
+        ("ID", "brand"),
+        ("Goal", ""),
+        ("Tier", ""),
+        ("Files", ""),
+        ("Phases", ""),
+    ]
+    rows = [
+        [
+            s["id"][:8],
+            s["goal"][:40],
+            s["tier"],
+            str(s["file_count"]),
+            str(s["phase_count"]),
+        ]
+        for s in specs
+    ]
+    session.renderer.ranked_table(f"{len(specs)} Spec(s)", columns, rows)
 
 
 def _get_session_runtime(session: ChatSession) -> "ChatRuntime":

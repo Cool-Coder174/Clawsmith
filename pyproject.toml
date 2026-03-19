@@ -28,6 +28,8 @@ dependencies = [
     "tenacity>=8.2",
     "starlette>=0.37",
     "uvicorn>=0.29",
+    "jsonschema>=4.17.0",
+    "prompt-toolkit>=3.0.0",
 ]
 
 [project.optional-dependencies]
@@ -47,7 +49,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["orchestrator*", "mcp_server*", "providers*", "routing*", "tools*", "jobs*", "config*", "prompts*", "agents*", "discovery*", "recommendation*", "install*", "memory_skill*", "repo_graph*", "scope_engine*", "mutation_engine*", "tui*", "execution*", "skills*"]
+include = ["orchestrator*", "mcp_server*", "providers*", "routing*", "tools*", "jobs*", "config*", "prompts*", "agents*", "discovery*", "recommendation*", "install*", "memory_skill*", "repo_graph*", "scope_engine*", "mutation_engine*", "tui*", "execution*", "skills*", "verification*"]
 
 [tool.ruff]
 target-version = "py311"
